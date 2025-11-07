@@ -1,17 +1,51 @@
 import { inngest } from "./client";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import Groq from "groq-sdk";
 import { logger } from "../utils/logger";
+import dotenv from "dotenv";
 
-// Initialize Gemini
-const genAI = new GoogleGenerativeAI(
-  process.env.GEMINI_API_KEY || "AIzaSyBCBz3wQu9Jjd_icCDZf-17CUO_O8IynwI"
-);
+dotenv.config();
 
-// Function to handle chat message processing
+// 🧩 Initialize Groq
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY,
+});
+
+// 🧠 Friendly CBT Therapist Personality
+const therapistPersona = `
+You are a warm, empathetic CBT-based therapist. 
+You speak naturally, like a caring human therapist in a private session.
+You use compassion, gentle reflection, and open-ended questions.
+Avoid sounding robotic or overly formal. 
+Be concise, kind, and encouraging.
+If you sense emotional distress, acknowledge it gently and offer grounding or reframing.
+Never give medical diagnoses or crisis instructions.
+`;
+
+// Helper for Groq chat completions
+async function generateWithGroq(prompt: string) {
+  try {
+    const completion = await groq.chat.completions.create({
+      model: "openai/gpt-oss-20b",
+      temperature: 0.8,
+      top_p: 0.9,
+      messages: [
+        { role: "system", content: therapistPersona },
+        { role: "user", content: prompt },
+      ],
+    });
+
+    return completion.choices[0].message.content?.trim() || "";
+  } catch (error) {
+    logger.error("Groq API error:", error);
+    throw new Error("Failed to generate Groq response");
+  }
+}
+
+// ===========================================================
+// 1️⃣ Process Chat Message
+// ===========================================================
 export const processChatMessage = inngest.createFunction(
-  {
-    id: "process-chat-message",
-  },
+  { id: "process-chat-message" },
   { event: "therapy/session.message" },
   async ({ event, step }) => {
     try {
@@ -22,7 +56,7 @@ export const processChatMessage = inngest.createFunction(
           userProfile: {
             emotionalState: [],
             riskLevel: 0,
-            preferences: {},
+            preferences: { tone: "warm", style: "conversational" },
           },
           sessionContext: {
             conversationThemes: [],
@@ -30,7 +64,6 @@ export const processChatMessage = inngest.createFunction(
           },
         },
         goals = [],
-        systemPrompt,
       } = event.data;
 
       logger.info("Processing chat message:", {
@@ -38,39 +71,31 @@ export const processChatMessage = inngest.createFunction(
         historyLength: history?.length,
       });
 
-      // Analyze the message using Gemini
+      // 🧩 Step 1 — Analyze Message
       const analysis = await step.run("analyze-message", async () => {
+        const prompt = `
+Analyze this therapy message using CBT principles and respond with valid JSON only.
+
+Message: ${message}
+Context: ${JSON.stringify({ memory, goals })}
+
+Provide:
+{
+  "emotionalState": "Describe emotional tone briefly (e.g., anxious, hopeful, sad, angry, calm)",
+  "themes": ["Key topics or concerns mentioned"],
+  "riskLevel": "0-5 where 0 = safe, 5 = crisis",
+  "recommendedApproach": "Best CBT method to use (e.g., reframing, grounding, behavioral activation)",
+  "progressIndicators": ["Any signs of insight or progress"]
+}
+Do not include markdown or explanations.
+`;
+
         try {
-          const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
-          const prompt = `Analyze this therapy message and provide insights. Return ONLY a valid JSON object with no markdown formatting or additional text.
-          Message: ${message}
-          Context: ${JSON.stringify({ memory, goals })}
-          
-          Required JSON structure:
-          {
-            "emotionalState": "string",
-            "themes": ["string"],
-            "riskLevel": number,
-            "recommendedApproach": "string",
-            "progressIndicators": ["string"]
-          }`;
-
-          const result = await model.generateContent(prompt);
-          const response = await result.response;
-          const text = response.text().trim();
-
-          logger.info("Received analysis from Gemini:", { text });
-
-          // Clean the response text to ensure it's valid JSON
-          const cleanText = text.replace(/```json\n|\n```/g, "").trim();
-          const parsedAnalysis = JSON.parse(cleanText);
-
-          logger.info("Successfully parsed analysis:", parsedAnalysis);
-          return parsedAnalysis;
+          const text = await generateWithGroq(prompt);
+          const clean = text.replace(/```json\n?|```/g, "").trim();
+          return JSON.parse(clean);
         } catch (error) {
-          logger.error("Error in message analysis:", { error, message });
-          // Return a default analysis instead of throwing
+          logger.error("Error parsing analysis:", error);
           return {
             emotionalState: "neutral",
             themes: [],
@@ -81,77 +106,61 @@ export const processChatMessage = inngest.createFunction(
         }
       });
 
-      // Update memory based on analysis
+      // 🧠 Step 2 — Update Memory
       const updatedMemory = await step.run("update-memory", async () => {
-        if (analysis.emotionalState) {
+        if (analysis.emotionalState)
           memory.userProfile.emotionalState.push(analysis.emotionalState);
-        }
-        if (analysis.themes) {
+        if (analysis.themes)
           memory.sessionContext.conversationThemes.push(...analysis.themes);
-        }
-        if (analysis.riskLevel) {
+        if (analysis.riskLevel)
           memory.userProfile.riskLevel = analysis.riskLevel;
-        }
         return memory;
       });
 
-      // If high risk is detected, trigger an alert
+      // 🚨 Step 3 — Risk Alert
       if (analysis.riskLevel > 4) {
         await step.run("trigger-risk-alert", async () => {
-          logger.warn("High risk level detected in chat message", {
+          logger.warn("⚠️ High risk level detected in chat message", {
             message,
             riskLevel: analysis.riskLevel,
           });
         });
       }
 
-      // Generate therapeutic response
+      // 💬 Step 4 — Generate Therapist Response
       const response = await step.run("generate-response", async () => {
+        const prompt = `
+You are a compassionate CBT therapist. 
+Generate a short, human-like, caring response.
+
+Message: ${message}
+Analysis: ${JSON.stringify(analysis)}
+Memory: ${JSON.stringify(memory)}
+Goals: ${JSON.stringify(goals)}
+
+Your response should:
+1. Start with empathy (reflect emotion naturally).
+2. Offer gentle validation.
+3. Apply a CBT technique where appropriate (e.g., reframing, small actionable step).
+4. Ask an open-ended question to continue the session.
+5. Sound conversational, warm, and human.
+`;
+
         try {
-          const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
-          const prompt = `${systemPrompt}
-          
-          Based on the following context, generate a therapeutic response:
-          Message: ${message}
-          Analysis: ${JSON.stringify(analysis)}
-          Memory: ${JSON.stringify(memory)}
-          Goals: ${JSON.stringify(goals)}
-          
-          Provide a response that:
-          1. Addresses the immediate emotional needs
-          2. Uses appropriate therapeutic techniques
-          3. Shows empathy and understanding
-          4. Maintains professional boundaries
-          5. Considers safety and well-being`;
-
-          const result = await model.generateContent(prompt);
-          const responseText = result.response.text().trim();
-
-          logger.info("Generated response:", { responseText });
-          return responseText;
+          const text = await generateWithGroq(prompt);
+          return text.trim();
         } catch (error) {
-          logger.error("Error generating response:", { error, message });
-          // Return a default response instead of throwing
-          return "I'm here to support you. Could you tell me more about what's on your mind?";
+          logger.error("Error generating response:", error);
+          return "That sounds really tough. I’m here with you — can you tell me a bit more about what’s been hardest lately?";
         }
       });
 
-      // Return the response in the expected format
-      return {
-        response,
-        analysis,
-        updatedMemory,
-      };
+      return { response, analysis, updatedMemory };
     } catch (error) {
-      logger.error("Error in chat message processing:", {
-        error,
-        message: event.data.message,
-      });
-      // Return a default response instead of throwing
+      logger.error("Error in chat message processing:", error);
       return {
         response:
-          "I'm here to support you. Could you tell me more about what's on your mind?",
+          "I’m here to listen and help you work through what’s on your mind.",
         analysis: {
           emotionalState: "neutral",
           themes: [],
@@ -165,130 +174,121 @@ export const processChatMessage = inngest.createFunction(
   }
 );
 
-// Function to analyze therapy session content
+// ===========================================================
+// 2️⃣ Analyze Entire Therapy Session
+// ===========================================================
 export const analyzeTherapySession = inngest.createFunction(
   { id: "analyze-therapy-session" },
   { event: "therapy/session.created" },
   async ({ event, step }) => {
     try {
-      // Get the session content
       const sessionContent = await step.run("get-session-content", async () => {
         return event.data.notes || event.data.transcript;
       });
 
-      // Analyze the session using Gemini
-      const analysis = await step.run("analyze-with-gemini", async () => {
-        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+      const analysis = await step.run("analyze-with-groq", async () => {
+        const prompt = `
+You are a CBT therapist reviewing a full session.
+Summarize clearly and return valid JSON.
 
-        const prompt = `Analyze this therapy session and provide insights:
-        Session Content: ${sessionContent}
-        
-        Please provide:
-        1. Key themes and topics discussed
-        2. Emotional state analysis
-        3. Potential areas of concern
-        4. Recommendations for follow-up
-        5. Progress indicators
-        
-        Format the response as a JSON object.`;
+Session: ${sessionContent}
 
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text();
+Return:
+{
+  "themes": ["main issues discussed"],
+  "emotionalSummary": "brief overall emotional tone",
+  "areasOfConcern": ["potential risk or distress points"],
+  "recommendations": ["suggested CBT directions or techniques"],
+  "progressIndicators": ["positive developments"]
+}
+`;
 
-        return JSON.parse(text);
+        const text = await generateWithGroq(prompt);
+        const clean = text.replace(/```json\n?|```/g, "").trim();
+        return JSON.parse(clean);
       });
 
-      // Store the analysis
       await step.run("store-analysis", async () => {
-        // Here you would typically store the analysis in your database
-        logger.info("Session analysis stored successfully");
+        logger.info("✅ Session analysis stored");
         return analysis;
       });
 
-      // If there are concerning indicators, trigger an alert
       if (analysis.areasOfConcern?.length > 0) {
         await step.run("trigger-concern-alert", async () => {
-          logger.warn("Concerning indicators detected in session analysis", {
+          logger.warn("⚠️ Areas of concern detected", {
             sessionId: event.data.sessionId,
             concerns: analysis.areasOfConcern,
           });
-          // Add your alert logic here
         });
       }
 
-      return {
-        message: "Session analysis completed",
-        analysis,
-      };
+      return { message: "Session analyzed", analysis };
     } catch (error) {
-      logger.error("Error in therapy session analysis:", error);
+      logger.error("Error analyzing session:", error);
       throw error;
     }
   }
 );
 
-// Function to generate personalized activity recommendations
+// ===========================================================
+// 3️⃣ Generate Personalized Activity Recommendations
+// ===========================================================
 export const generateActivityRecommendations = inngest.createFunction(
   { id: "generate-activity-recommendations" },
   { event: "mood/updated" },
   async ({ event, step }) => {
     try {
-      // Get user's mood history and activity history
-      const userContext = await step.run("get-user-context", async () => {
-        // Here you would typically fetch user's history from your database
-        return {
-          recentMoods: event.data.recentMoods,
-          completedActivities: event.data.completedActivities,
-          preferences: event.data.preferences,
-        };
-      });
+      const userContext = await step.run("get-user-context", async () => ({
+        recentMoods: event.data.recentMoods,
+        completedActivities: event.data.completedActivities,
+        preferences: event.data.preferences,
+      }));
 
-      // Generate recommendations using Gemini
       const recommendations = await step.run(
         "generate-recommendations",
         async () => {
-          const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+          const prompt = `
+You are a CBT therapist suggesting uplifting activities.
 
-          const prompt = `Based on the following user context, generate personalized activity recommendations:
-        User Context: ${JSON.stringify(userContext)}
-        
-        Please provide:
-        1. 3-5 personalized activity recommendations
-        2. Reasoning for each recommendation
-        3. Expected benefits
-        4. Difficulty level
-        5. Estimated duration
-        
-        Format the response as a JSON object.`;
+User Context: ${JSON.stringify(userContext)}
 
-          const result = await model.generateContent(prompt);
-          const response = await result.response;
-          const text = response.text();
+Return JSON only:
+{
+  "recommendations": [
+    {
+      "activity": "short friendly title",
+      "reasoning": "why it helps for this user",
+      "expectedBenefits": ["specific benefits"],
+      "difficultyLevel": "easy | moderate | challenging",
+      "estimatedDuration": "approx time"
+    }
+  ]
+}
+Keep tone encouraging and practical.
+`;
 
-          return JSON.parse(text);
+          const text = await generateWithGroq(prompt);
+          const clean = text.replace(/```json\n?|```/g, "").trim();
+          return JSON.parse(clean);
         }
       );
 
-      // Store the recommendations
       await step.run("store-recommendations", async () => {
-        // Here you would typically store the recommendations in your database
-        logger.info("Activity recommendations stored successfully");
+        logger.info("✅ Activity recommendations stored");
         return recommendations;
       });
 
-      return {
-        message: "Activity recommendations generated",
-        recommendations,
-      };
+      return { message: "Activity recommendations generated", recommendations };
     } catch (error) {
-      logger.error("Error generating activity recommendations:", error);
+      logger.error("Error generating recommendations:", error);
       throw error;
     }
   }
 );
 
-// Add the functions to the exported array
+// ===========================================================
+// Export
+// ===========================================================
 export const functions = [
   processChatMessage,
   analyzeTherapySession,
