@@ -1,22 +1,22 @@
 import { Request, Response } from "express";
 import { ChatSession, IChatSession } from "../models/ChatSession";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { v4 as uuidv4 } from "uuid";
 import { logger } from "../utils/logger";
 import { inngest } from "../inngest/client";
 import { User } from "../models/User";
 import { InngestSessionResponse, InngestEvent } from "../types/inngest";
 import { Types } from "mongoose";
+import Groq from "groq-sdk";
 
-// Initialize Gemini API
-const genAI = new GoogleGenerativeAI(
-  process.env.GEMINI_API_KEY || "AIzaSyBCBz3wQu9Jjd_icCDZf-17CUO_O8IynwI"
-);
+// Initialize Groq API client
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY || "",
+});
 
-// Create a new chat session
+// ✅ Create a new chat session
 export const createChatSession = async (req: Request, res: Response) => {
   try {
-    // Check if user is authenticated
+    // Ensure user is authenticated
     if (!req.user || !req.user.id) {
       return res
         .status(401)
@@ -25,14 +25,10 @@ export const createChatSession = async (req: Request, res: Response) => {
 
     const userId = new Types.ObjectId(req.user.id);
     const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
 
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    // Generate a unique sessionId
+    // Generate session ID
     const sessionId = uuidv4();
-
     const session = new ChatSession({
       sessionId,
       userId,
@@ -56,7 +52,7 @@ export const createChatSession = async (req: Request, res: Response) => {
   }
 };
 
-// Send a message in the chat session
+// ✅ Send a message using Groq model
 export const sendMessage = async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
@@ -65,19 +61,16 @@ export const sendMessage = async (req: Request, res: Response) => {
 
     logger.info("Processing message:", { sessionId, message });
 
-    // Find session by sessionId
+    // Find the chat session
     const session = await ChatSession.findOne({ sessionId });
-    if (!session) {
-      logger.warn("Session not found:", { sessionId });
+    if (!session)
       return res.status(404).json({ message: "Session not found" });
-    }
 
     if (session.userId.toString() !== userId.toString()) {
-      logger.warn("Unauthorized access attempt:", { sessionId, userId });
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    // Create Inngest event for message processing
+    // Log event for tracking in Inngest
     const event: InngestEvent = {
       name: "therapy/session.message",
       data: {
@@ -95,32 +88,24 @@ export const sendMessage = async (req: Request, res: Response) => {
           },
         },
         goals: [],
-        systemPrompt: `You are an AI therapist assistant. Your role is to:
-        1. Provide empathetic and supportive responses
-        2. Use evidence-based therapeutic techniques
-        3. Maintain professional boundaries
-        4. Monitor for risk factors
-        5. Guide users toward their therapeutic goals`,
+        systemPrompt: `You are an empathetic AI therapist assistant.
+          - Offer emotional support
+          - Use CBT-style reflection
+          - Ask gentle follow-up questions
+          - Keep responses short but warm
+          - Monitor user emotions and potential risk`,
       },
     };
 
-    logger.info("Sending message to Inngest:", { event });
-
-    // Send event to Inngest for logging and analytics
     await inngest.send(event);
 
-    // Process the message directly using Gemini
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    // ✅ Step 1: Analyze message (Groq JSON response)
+    const analysisPrompt = `
+    Analyze this user message for therapy context. Return valid JSON only.
 
-    // Analyze the message
-    const analysisPrompt = `Analyze this therapy message and provide insights. Return ONLY a valid JSON object with no markdown formatting or additional text.
-    Message: ${message}
-    Context: ${JSON.stringify({
-      memory: event.data.memory,
-      goals: event.data.goals,
-    })}
-    
-    Required JSON structure:
+    Message: "${message}"
+
+    Required JSON:
     {
       "emotionalState": "string",
       "themes": ["string"],
@@ -129,43 +114,51 @@ export const sendMessage = async (req: Request, res: Response) => {
       "progressIndicators": ["string"]
     }`;
 
-    const analysisResult = await model.generateContent(analysisPrompt);
-    const analysisText = analysisResult.response.text().trim();
-    const cleanAnalysisText = analysisText
-      .replace(/```json\n|\n```/g, "")
-      .trim();
-    const analysis = JSON.parse(cleanAnalysisText);
+    const analysisCompletion = await groq.chat.completions.create({
+      model: "openai/gpt-oss-20b",
+      messages: [{ role: "user", content: analysisPrompt }],
+      temperature: 0.4,
+    });
+
+    const analysisText =
+      analysisCompletion.choices?.[0]?.message?.content?.trim() || "{}";
+    const analysis = JSON.parse(
+      analysisText.replace(/```json|```/g, "").trim()
+    );
 
     logger.info("Message analysis:", analysis);
 
-    // Generate therapeutic response
-    const responsePrompt = `${event.data.systemPrompt}
-    
-    Based on the following context, generate a therapeutic response:
-    Message: ${message}
-    Analysis: ${JSON.stringify(analysis)}
-    Memory: ${JSON.stringify(event.data.memory)}
-    Goals: ${JSON.stringify(event.data.goals)}
-    
-    Provide a response that:
-    1. Addresses the immediate emotional needs
-    2. Uses appropriate therapeutic techniques
-    3. Shows empathy and understanding
-    4. Maintains professional boundaries
-    5. Considers safety and well-being`;
+    // ✅ Step 2: Generate friendly therapist-style response
+    const responsePrompt = `
+    ${event.data.systemPrompt}
 
-    const responseResult = await model.generateContent(responsePrompt);
-    const response = responseResult.response.text().trim();
+    User message: "${message}"
+    Emotional analysis: ${JSON.stringify(analysis)}
+
+    Write a warm, empathetic, and conversational response (2–3 sentences max). 
+    End with an open-ended question to keep the conversation going.
+    Example tone:
+    - “That sounds really difficult, I can understand how you feel.”
+    - “It’s okay to feel this way sometimes. What do you think might help you relax right now?”`;
+
+    const responseCompletion = await groq.chat.completions.create({
+      model: "openai/gpt-oss-20b",
+      messages: [{ role: "user", content: responsePrompt }],
+      temperature: 0.7,
+    });
+
+    const response =
+      responseCompletion.choices?.[0]?.message?.content?.trim() ||
+      "I'm here to listen. Could you share a bit more about that?";
 
     logger.info("Generated response:", response);
 
-    // Add message to session history
+    // ✅ Save messages to session
     session.messages.push({
       role: "user",
       content: message,
       timestamp: new Date(),
     });
-
     session.messages.push({
       role: "assistant",
       content: response,
@@ -179,14 +172,11 @@ export const sendMessage = async (req: Request, res: Response) => {
       },
     });
 
-    // Save the updated session
     await session.save();
     logger.info("Session updated successfully:", { sessionId });
 
-    // Return the response
     res.json({
       response,
-      message: response,
       analysis,
       metadata: {
         progress: {
@@ -204,7 +194,7 @@ export const sendMessage = async (req: Request, res: Response) => {
   }
 };
 
-// Get chat session history
+// ✅ Fetch chat session history
 export const getSessionHistory = async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
@@ -213,9 +203,7 @@ export const getSessionHistory = async (req: Request, res: Response) => {
     const session = (await ChatSession.findById(
       sessionId
     ).exec()) as IChatSession;
-    if (!session) {
-      return res.status(404).json({ message: "Session not found" });
-    }
+    if (!session) return res.status(404).json({ message: "Session not found" });
 
     if (session.userId.toString() !== userId.toString()) {
       return res.status(403).json({ message: "Unauthorized" });
@@ -232,16 +220,14 @@ export const getSessionHistory = async (req: Request, res: Response) => {
   }
 };
 
+// ✅ Fetch specific chat session
 export const getChatSession = async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
-    logger.info(`Getting chat session: ${sessionId}`);
     const chatSession = await ChatSession.findOne({ sessionId });
-    if (!chatSession) {
-      logger.warn(`Chat session not found: ${sessionId}`);
+    if (!chatSession)
       return res.status(404).json({ error: "Chat session not found" });
-    }
-    logger.info(`Found chat session: ${sessionId}`);
+
     res.json(chatSession);
   } catch (error) {
     logger.error("Failed to get chat session:", error);
@@ -249,17 +235,14 @@ export const getChatSession = async (req: Request, res: Response) => {
   }
 };
 
+// ✅ Get all chat history
 export const getChatHistory = async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
     const userId = new Types.ObjectId(req.user.id);
-
-    // Find session by sessionId instead of _id
     const session = await ChatSession.findOne({ sessionId });
-    if (!session) {
-      return res.status(404).json({ message: "Session not found" });
-    }
 
+    if (!session) return res.status(404).json({ message: "Session not found" });
     if (session.userId.toString() !== userId.toString()) {
       return res.status(403).json({ message: "Unauthorized" });
     }
