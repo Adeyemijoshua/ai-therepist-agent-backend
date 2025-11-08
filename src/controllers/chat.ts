@@ -253,3 +253,23 @@ export const getChatHistory = async (req: Request, res: Response) => {
     res.status(500).json({ message: "Error fetching chat history" });
   }
 };
+
+// ✅ Fetch all chat sessions for authenticated user
+export const getAllChatSessions = async (req: Request, res: Response) => {
+  try {
+    const userId = new Types.ObjectId(req.user.id);
+    const sessions = await ChatSession.find({ userId }).sort({ startTime: -1 });
+    res.json(
+      sessions.map((s) => ({
+        sessionId: s.sessionId,
+        startTime: s.startTime,
+        status: s.status,
+        messagesCount: s.messages.length,
+        lastMessage: s.messages[s.messages.length - 1] || null,
+      }))
+    );
+  } catch (error) {
+    logger.error("Error fetching all chat sessions:", error);
+    res.status(500).json({ message: "Error fetching chat sessions" });
+  }
+};
