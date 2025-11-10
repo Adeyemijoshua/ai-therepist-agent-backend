@@ -1,6 +1,6 @@
 import express from "express";
 import { auth } from "../middleware/auth";
-import { logActivity } from "../controllers/activityController";
+import { logActivity, getTodaysActivities } from "../controllers/activityController";
 
 const router = express.Router();
 
@@ -9,5 +9,8 @@ router.use(auth);
 
 // Log a new activity
 router.post("/", logActivity);
+
+router.get("/today", getTodaysActivities);
+
 
 export default router;

@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { Types } from "mongoose";
 import { Activity, IActivity } from "../models/Activity";
 import { logger } from "../utils/logger";
 import { sendActivityCompletionEvent } from "../utils/inngestEvents";
@@ -52,3 +53,32 @@ export const logActivity = async (
     next(error);
   }
 };
+
+export const getTodaysActivities = async (req: Request, res: Response) => {
+  try {
+    // Ensure user is authenticated
+    if (!req.user || !req.user.id) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const userId = new Types.ObjectId(req.user.id);
+
+    // Get today's date range
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+    // Find activities logged today by this user
+    const activities = await Activity.find({
+      userId,
+      createdAt: { $gte: startOfDay, $lte: endOfDay },
+    });
+
+    res.status(200).json(activities);
+  } catch (error) {
+    console.error("Error fetching today's activities:", error);
+    res.status(500).json({ message: "Error fetching today's activities" });
+  }
+};
+
