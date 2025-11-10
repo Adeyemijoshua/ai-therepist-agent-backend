@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { register, login, logout } from "../controllers/authController";
+import { register, login, logout, verifyToken } from "../controllers/authController";
 import { auth } from "../middleware/auth";
 
 const router = Router();
@@ -17,5 +17,9 @@ router.post("/logout", auth, logout);
 router.get("/me", auth, (req, res) => {
   res.json({ user: req.user });
 });
+
+// Route to verify token and return logged-in user
+router.get("/verify-token", auth, verifyToken);
+
 
 export default router;

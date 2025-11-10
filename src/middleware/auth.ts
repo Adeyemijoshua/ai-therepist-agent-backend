@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { User } from "../models/User";
 
+
 // Extend Express Request type to include user
 declare global {
   namespace Express {
@@ -35,3 +36,4 @@ export const auth = async (req: Request, res: Response, next: NextFunction) => {
     res.status(401).json({ message: "Invalid authentication token" });
   }
 };
+

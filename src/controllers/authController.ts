@@ -3,6 +3,7 @@ import { User } from "../models/User";
 import { Session } from "../models/Session";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { logger } from "../utils/logger";
 
 export const register = async (req: Request, res: Response) => {
   try {
@@ -102,5 +103,35 @@ export const logout = async (req: Request, res: Response) => {
     res.json({ message: "Logged out successfully" });
   } catch (error) {
     res.status(500).json({ message: "Server error", error });
+  }
+};
+
+
+export const verifyToken = async (req: Request, res: Response) => {
+  try {
+    // req.user is set by your auth middleware
+    if (!req.user) {
+      return res.status(401).json({
+        isAuthenticated: false,
+        message: "User not authenticated",
+      });
+    }
+
+    const user = req.user;
+
+    res.status(200).json({
+      isAuthenticated: true,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+      },
+    });
+  } catch (error) {
+    logger.error("Error verifying token:", error);
+    res.status(500).json({
+      isAuthenticated: false,
+      message: "Error verifying token",
+    });
   }
 };
