@@ -71,10 +71,11 @@ export const getTodayActivities = async (req: Request, res: Response) => {
     endOfDay.setHours(23, 59, 59, 999);
 
     // Find all activities for this user created today
-    const activities = await Activity.find({
-      userId,
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
-    }).sort({ createdAt: -1 });
+   const activities = await Activity.find({
+    userId,
+    timestamp: { $gte: startOfDay, $lte: endOfDay },
+  }).sort({ timestamp: -1 });
+
 
     res.status(200).json(activities);
   } catch (error) {
