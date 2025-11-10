@@ -54,31 +54,34 @@ export const logActivity = async (
   }
 };
 
-export const getTodaysActivities = async (req: Request, res: Response) => {
+export const getTodayActivities = async (req: Request, res: Response) => {
   try {
     // Ensure user is authenticated
     if (!req.user || !req.user.id) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Unauthorized - User not authenticated" });
     }
 
-    const userId = new Types.ObjectId(req.user.id);
+    const userId = req.user.id;
 
-    // Get today's date range
+    // Get today's start and end time
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
+
     const endOfDay = new Date();
     endOfDay.setHours(23, 59, 59, 999);
 
-    // Find activities logged today by this user
+    // Find all activities for this user created today
     const activities = await Activity.find({
       userId,
       createdAt: { $gte: startOfDay, $lte: endOfDay },
-    });
+    }).sort({ createdAt: -1 });
 
     res.status(200).json(activities);
   } catch (error) {
-    console.error("Error fetching today's activities:", error);
-    res.status(500).json({ message: "Error fetching today's activities" });
+    logger.error("Error fetching today's activities:", error);
+    res.status(500).json({
+      message: "Error fetching today's activities",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
   }
 };
-
