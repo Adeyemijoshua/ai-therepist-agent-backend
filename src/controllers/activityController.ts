@@ -57,11 +57,11 @@ export const logActivity = async (
 export const getTodayActivities = async (req: Request, res: Response) => {
   try {
     // Ensure user is authenticated
-    if (!req.user || !req.user.id) {
+    if (!req.user || !req.user._id) {
       return res.status(401).json({ message: "Unauthorized - User not authenticated" });
     }
 
-    const userId = req.user.id;
+    const userId = req.user._id;
 
     // Get today's start and end time
     const startOfDay = new Date();
