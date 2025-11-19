@@ -11,7 +11,7 @@ The $JSON_BLOB must be valid, parseable JSON and only contain a SINGLE action. H
 
 \`\`\`json
 {{
-  "action": $TOOL_NAME,
+  "action": $TOOL_NAME
   "action_input": $INPUT
 }}
 \`\`\`
