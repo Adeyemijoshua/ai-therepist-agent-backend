@@ -14,31 +14,19 @@ import { Types } from "mongoose";
 import Groq from "groq-sdk";
 
 // ==================== GROQ INITIALIZATION ====================
-console.log('🔑 GROQ_API_KEY loaded:', process.env.GROQ_API_KEY ? '✅ Yes' : '❌ No');
-
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY || "",
 });
 
-if (!process.env.GROQ_API_KEY) {
-  logger.error('GROQ_API_KEY environment variable is missing');
-  throw new Error('GROQ_API_KEY environment variable is missing');
-}
-
-// ==================== THERAPEUTIC LEO CONFIGURATION ====================
+// ==================== CBT THERAPIST CONFIGURATION ====================
 
 interface CBTAssessment {
   automaticThoughts: string[];
   cognitiveDistortions: string[];
-  emotionalResponse: {
-    primaryEmotion: string;
-    intensity: number;
-  };
-  recommendedCbtTechniques: string[];
-  homeworkSuggestion: string;
-  clinicalNote?: string;
-  therapeuticGoal?: string;
-  progressIndicator?: string;
+  emotionalState: string;
+  intensity: number;
+  cbtTechnique: string;
+  coreBelief: string;
 }
 
 interface AuthenticatedRequest extends Request {
@@ -49,182 +37,132 @@ interface AuthenticatedRequest extends Request {
   };
 }
 
-// Therapeutic Progress Tracker
-class ProgressTracker {
-  private static userProgress = new Map();
-  
-  static updateProgress(sessionId: string, emotion: string, intensity: number, techniquesUsed: string[]) {
-    if (!this.userProgress.has(sessionId)) {
-      this.userProgress.set(sessionId, {
-        sessionStart: new Date(),
-        emotionalPatterns: [],
-        techniquesApplied: [],
-        homeworkCompleted: [],
-        progressMarkers: []
-      });
-    }
-    
-    const progress = this.userProgress.get(sessionId);
-    progress.emotionalPatterns.push({ emotion, intensity, timestamp: new Date() });
-    progress.techniquesApplied.push(...techniquesUsed);
-    
-    // Track progress markers
-    if (intensity < 5) {
-      progress.progressMarkers.push("emotional_regulation_improved");
-    }
-    if (techniquesUsed.includes("mindfulness")) {
-      progress.progressMarkers.push("mindfulness_practiced");
-    }
-  }
-  
-  static getProgressSummary(sessionId: string) {
-    const progress = this.userProgress.get(sessionId);
-    if (!progress) return "Early stages of therapeutic work";
-    
-    const sessions = progress.emotionalPatterns.length;
-    const avgIntensity = progress.emotionalPatterns.reduce((acc: number, curr: any) => acc + curr.intensity, 0) / sessions;
-    
-    if (sessions < 3) return "Building therapeutic foundation";
-    if (avgIntensity < 4) return "Showing good emotional regulation";
-    if (progress.progressMarkers.includes("mindfulness_practiced")) return "Developing mindfulness skills";
-    
-    return "Making steady therapeutic progress";
-  }
-}
-
-// Evidence-Based Therapeutic Techniques
-class TherapeuticTechniques {
-  static getTechniqueForEmotion(emotion: string, intensity: number): { technique: string; approach: string } {
-    const techniques: { [key: string]: { technique: string; approach: string }[] } = {
-      anxious: [
-        { 
-          technique: "Grounding Exercise", 
-          approach: "Let's do a quick 5-4-3-2-1 grounding exercise together. Name 5 things you can see, 4 things you can touch, 3 things you can hear, 2 things you can smell, and 1 thing you can taste." 
-        },
-        { 
-          technique: "Breathing Technique", 
-          approach: "Try the box breathing method: breathe in for 4 seconds, hold for 4 seconds, breathe out for 4 seconds, hold for 4 seconds. Let's do this together for a few cycles." 
-        }
-      ],
-      depressed: [
-        { 
-          technique: "Behavioral Activation", 
-          approach: "Let's identify one small, meaningful activity you can do today. Even something tiny like making your bed or drinking a glass of water can build momentum." 
-        },
-        { 
-          technique: "Gratitude Practice", 
-          approach: "Can you identify three small things you're grateful for right now? They can be as simple as a comfortable chair or a warm drink." 
-        }
-      ],
-      angry: [
-        { 
-          technique: "Cooling Breath", 
-          approach: "Try the cooling breath technique: breathe in through your mouth as if sipping through a straw, then breathe out slowly through your nose. This can help calm the nervous system." 
-        },
-        { 
-          technique: "Perspective Taking", 
-          approach: "Let's imagine we're looking at this situation from one year in the future. What might we see differently from that perspective?" 
-        }
-      ],
-      overwhelmed: [
-        { 
-          technique: "Chunking Method", 
-          approach: "Let's break this down into the smallest possible steps. What's the absolute first tiny step you could take?" 
-        },
-        { 
-          technique: "Priority Matrix", 
-          approach: "Let's categorize what's truly urgent vs what can wait. This helps create mental space and clarity." 
-        }
-      ]
-    };
-
-    const emotionTechniques = techniques[emotion] || [
-      { 
-        technique: "Mindful Observation", 
-        approach: "Let's practice just observing your thoughts and feelings without judgment, like clouds passing in the sky." 
+// CBT Techniques for Real Therapy
+class CBTTherapist {
+  static getCBTResponse(technique: string, emotion: string): string {
+    const techniques: { [key: string]: { empathy: string[]; intervention: string[] } } = {
+      thought_records: {
+        empathy: [
+          "I hear those automatic thoughts coming through strongly.",
+          "It sounds like your mind is generating some powerful negative predictions.",
+          "I'm noticing how quickly those thoughts are showing up for you."
+        ],
+        intervention: [
+          "Let's examine the evidence for that thought. What facts support it? What facts challenge it?",
+          "What would you tell a friend who had this same thought?",
+          "Is there a more balanced way to view this situation?"
+        ]
       },
-      { 
-        technique: "Compassionate Self-Talk", 
-        approach: "What would you say to a dear friend who was feeling this way? Try offering yourself that same compassion." 
+      behavioral_activation: {
+        empathy: [
+          "I sense how hard it is to find motivation right now.",
+          "It sounds like everything feels like too much effort.",
+          "I hear how your energy has been really low lately."
+        ],
+        intervention: [
+          "What's one tiny step that feels possible, even if you don't feel like doing it?",
+          "What activity used to bring you even a small sense of satisfaction?",
+          "Could we schedule one small, pleasant activity for today?"
+        ]
+      },
+      cognitive_restructuring: {
+        empathy: [
+          "I can hear how stuck you feel in that perspective.",
+          "It sounds like this view of the situation feels very fixed.",
+          "I'm noticing how absolute that thinking feels for you right now."
+        ],
+        intervention: [
+          "What's another way to interpret what happened?",
+          "If you looked at this from a different angle, what might you see?",
+          "What would a more flexible perspective on this be?"
+        ]
+      },
+      exposure: {
+        empathy: [
+          "I can feel the anxiety that thought brings up for you.",
+          "It sounds like this really triggers your fear response.",
+          "I'm hearing how much you want to avoid that uncomfortable feeling."
+        ],
+        intervention: [
+          "What would be the smallest step toward facing this fear?",
+          "Could we practice sitting with this discomfort together for a moment?",
+          "What would happen if you approached this gradually instead of avoiding?"
+        ]
+      },
+      mindfulness: {
+        empathy: [
+          "I hear how much those thoughts are pulling you in.",
+          "It sounds like your mind is really holding onto those worries.",
+          "I'm noticing how entangled you feel with those thoughts."
+        ],
+        intervention: [
+          "Can we practice observing these thoughts without getting caught in them?",
+          "What if we just notice these thoughts like clouds passing in the sky?",
+          "Can you describe the thoughts without judging them or yourself?"
+        ]
       }
-    ];
+    };
 
-    return emotionTechniques[Math.floor(Math.random() * emotionTechniques.length)];
+    const techniqueData = techniques[technique] || techniques.mindfulness;
+    const empathy = techniqueData.empathy[Math.floor(Math.random() * techniqueData.empathy.length)];
+    const intervention = techniqueData.intervention[Math.floor(Math.random() * techniqueData.intervention.length)];
+    
+    return `${empathy} ${intervention}`;
   }
 
-  static generateTherapeuticHomework(emotion: string, technique: string): string {
+  static identifyDistortions(thoughts: string[]): string {
+    const distortions: { [key: string]: string } = {
+      all_or_nothing: "black-and-white thinking",
+      catastrophizing: "expecting the worst-case scenario",
+      overgeneralization: "seeing patterns based on single events",
+      mental_filter: "focusing only on the negative",
+      disqualifying_positive: "discounting positive experiences",
+      jumping_conclusions: "mind reading or fortune telling",
+      magnification: "blowing things out of proportion",
+      emotional_reasoning: "believing feelings reflect reality",
+      should_statements: "rigid rules about how things must be",
+      labeling: "global negative judgments about self"
+    };
+
+    // Simple distortion identification
+    if (thoughts.length === 0) return distortions.mental_filter;
+    
+    const thoughtText = thoughts.join(' ').toLowerCase();
+    
+    if (thoughtText.includes('always') || thoughtText.includes('never') || thoughtText.includes('every') || thoughtText.includes('no one')) 
+      return distortions.all_or_nothing;
+    if (thoughtText.includes('disaster') || thoughtText.includes('worst') || thoughtText.includes('terrible') || thoughtText.includes('awful')) 
+      return distortions.catastrophizing;
+    if (thoughtText.includes('everyone') || thoughtText.includes('nobody') || thoughtText.includes('always') || thoughtText.includes('never')) 
+      return distortions.overgeneralization;
+    
+    return distortions.mental_filter;
+  }
+
+  static getCBTHomework(technique: string): string {
     const homework: { [key: string]: string } = {
-      "Grounding Exercise": "Practice the 5-4-3-2-1 grounding exercise twice daily",
-      "Breathing Technique": "Do 2 minutes of box breathing every time you feel anxiety rising",
-      "Behavioral Activation": "Complete one small meaningful activity each day, no matter how small",
-      "Gratitude Practice": "Write down three things you're grateful for each evening",
-      "Cooling Breath": "Use the cooling breath technique when you notice anger building",
-      "Mindful Observation": "Practice observing thoughts without engagement for 5 minutes daily",
-      "Compassionate Self-Talk": "Notice critical self-talk and reframe it with compassion"
+      thought_records: "Practice noticing automatic thoughts and writing down evidence for and against them",
+      behavioral_activation: "Schedule one small, pleasant activity each day",
+      cognitive_restructuring: "Notice rigid thoughts and practice finding alternative perspectives",
+      exposure: "Practice approaching feared situations in small, manageable steps",
+      mindfulness: "Practice observing thoughts without judgment for 5 minutes daily"
     };
 
-    return homework[technique] || "Practice noticing the connection between thoughts, feelings, and behaviors this week";
+    return homework[technique] || "Practice noticing the connection between thoughts, feelings, and behaviors";
   }
-}
 
-// Exercise Integration with Therapeutic Focus
-class ExerciseIntegrator {
-  static getTherapeuticExercise(emotion: string, intensity: number): string {
-    const exercises: { [key: string]: string[] } = {
-      anxious: [
-        "The 4-7-8 breathing exercise can quickly calm your nervous system. Breathe in for 4, hold for 7, exhale for 8.",
-        "Progressive muscle relaxation in the app can release physical tension that often accompanies anxiety.",
-        "The ocean sounds meditation creates a calming environment that regulates the nervous system."
-      ],
-      depressed: [
-        "The behavioral activation meditation can help build momentum when motivation is low.",
-        "The self-compassion practice in the app can counter negative self-talk patterns.",
-        "The gentle movement meditation can help reconnect with your body when feeling disconnected."
-      ],
-      angry: [
-        "The cooling breath exercise can create space between trigger and reaction.",
-        "The mindfulness of anger meditation helps observe anger without being consumed by it.",
-        "The body scan can release physical tension that fuels angry feelings."
-      ],
-      overwhelmed: [
-        "The single-point focus meditation trains your brain to concentrate amid chaos.",
-        "The priority clarification exercise can bring order to overwhelming thoughts.",
-        "The stress relief breathing creates immediate mental space."
-      ]
+  static getExerciseSuggestion(technique: string, emotion: string): string {
+    const exercises: { [key: string]: string } = {
+      thought_records: "The thought challenging exercise in the app can help examine those automatic thoughts",
+      behavioral_activation: "The activity scheduling meditation can help build momentum",
+      cognitive_restructuring: "The perspective shifting exercise might help find alternative views",
+      exposure: "The gradual exposure practice can help build confidence facing fears",
+      mindfulness: "The mindful observation meditation helps create space from difficult thoughts"
     };
 
-    const emotionExercises = exercises[emotion] || [
-      "The mindful breathing exercise creates space between stimulus and response.",
-      "The body awareness practice helps ground you in the present moment.",
-      "The emotional regulation meditation builds resilience for difficult feelings."
-    ];
-
-    return emotionExercises[Math.floor(Math.random() * emotionExercises.length)];
+    return exercises[technique] || "The CBT techniques in the app align well with what we're working on";
   }
 }
-
-// Helper functions
-const identifyThemes = (messages: any[]): string[] => {
-  const themes = new Map<string, number>();
-  
-  messages.forEach((msg: any) => {
-    if (msg.metadata?.analysis?.cognitiveDistortions) {
-      msg.metadata.analysis.cognitiveDistortions.forEach((distortion: string) => {
-        themes.set(distortion, (themes.get(distortion) || 0) + 1);
-      });
-    }
-    if (msg.metadata?.analysis?.emotionalResponse?.primaryEmotion) {
-      const emotion = msg.metadata.analysis.emotionalResponse.primaryEmotion;
-      themes.set(emotion, (themes.get(emotion) || 0) + 1);
-    }
-  });
-
-  return Array.from(themes.entries())
-    .filter(([_, count]) => count >= 2)
-    .sort((a, b) => b[1] - a[1])
-    .map(([theme]) => theme)
-    .slice(0, 5);
-};
 
 // ==================== CONTROLLER FUNCTIONS ====================
 
@@ -263,7 +201,7 @@ export const createChatSession = async (req: AuthenticatedRequest, res: Response
   }
 };
 
-// ✅ THERAPEUTIC sendMessage with GPT-OSS-120B
+// ✅ CBT THERAPIST sendMessage
 export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { sessionId } = req.params;
@@ -275,8 +213,6 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
     
     const userId = new Types.ObjectId(req.user.id);
 
-    logger.info("Therapeutic Leo processing message:", { sessionId, message });
-
     const session = await ChatSession.findOne({ sessionId });
     if (!session) {
       return res.status(404).json({ message: "Session not found" });
@@ -286,173 +222,97 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    // ✅ STEP 1: Load conversation history for therapeutic continuity
-    const previousMessages = session.messages.slice(-10);
-    const conversationContext = previousMessages.length > 0 ? 
-      `Therapeutic history:\n${previousMessages.map(msg => 
-        `${msg.role === 'user' ? 'Client' : 'Therapist'}: ${msg.content}`
-      ).join('\n')}` : 'First therapeutic session.';
+    // ✅ CBT Assessment
+    const assessmentPrompt = `
+    As a CBT therapist, identify the cognitive patterns in this message.
 
-    // Identify recurring therapeutic themes
-    const recurringThemes = identifyThemes(session.messages);
+    Client: "${message}"
 
-    // ✅ STEP 2: Deep Therapeutic Analysis with GPT-OSS-120B
-    const analysisPrompt = `
-    As an experienced clinical psychologist, provide a comprehensive therapeutic assessment.
-
-    CLIENT'S STATEMENT: "${message.replace(/"/g, '\\"')}"
-
-    THERAPEUTIC CONTEXT:
-    ${conversationContext}
-    ${recurringThemes.length > 0 ? `RECURRING PATTERNS: ${recurringThemes.join(', ')}` : ''}
-
-    Provide a detailed assessment in this EXACT JSON format:
+    Return JSON:
     {
-      "automaticThoughts": ["identify core automatic thoughts"],
-      "cognitiveDistortions": ["all_or_nothing", "catastrophizing", "overgeneralization", "mental_filter", "emotional_reasoning", "should_statements", "labeling", "personalization"],
-      "emotionalResponse": {
-        "primaryEmotion": "anxious|depressed|angry|overwhelmed|stressed|sad|frustrated",
-        "intensity": 1-10
-      },
-      "recommendedCbtTechniques": ["thought_challenging", "behavioral_activation", "mindfulness", "cognitive_restructuring", "exposure", "activity_scheduling"],
-      "homeworkSuggestion": "specific therapeutic practice",
-      "clinicalNote": "clinical observation and insight",
-      "therapeuticGoal": "immediate therapeutic objective",
-      "progressIndicator": "what positive change would look like"
-    }
+      "automaticThoughts": ["identify 2-3 key automatic thoughts"],
+      "cognitiveDistortions": ["all_or_nothing", "catastrophizing", "overgeneralization", "mental_filter", "emotional_reasoning"],
+      "emotionalState": "anxious|depressed|angry|overwhelmed",
+      "intensity": 1-10,
+      "cbtTechnique": "thought_records|behavioral_activation|cognitive_restructuring|exposure|mindfulness",
+      "coreBelief": "brief core belief pattern"
+    }`;
 
-    Return ONLY the JSON object. No other text.`;
-
-    const analysisCompletion = await groq.chat.completions.create({
-      messages: [{ role: "user", content: analysisPrompt }],
-      model: "openai/gpt-oss-120b", // Using the more powerful model
-      temperature: 0.1,
-      max_tokens: 800,
+    const assessmentCompletion = await groq.chat.completions.create({
+      messages: [{ role: "user", content: assessmentPrompt }],
+      model: "openai/gpt-oss-20b",
+      temperature: 0.2,
+      max_tokens: 300,
     });
 
-    const analysisText = analysisCompletion.choices?.[0]?.message?.content?.trim() || "{}";
+    const assessmentText = assessmentCompletion.choices?.[0]?.message?.content?.trim() || "{}";
     
-    // ✅ SAFE JSON PARSING
     let cbtData: CBTAssessment;
     try {
-      let cleanedText = analysisText.replace(/```json|```/g, "").trim();
+      const cleanedText = assessmentText.replace(/```json|```/g, "").trim();
       cbtData = JSON.parse(cleanedText);
-      console.log("✅ Therapeutic analysis completed");
-    } catch (parseError) {
-      console.error("❌ Analysis parse error:", parseError);
-      
-      // Therapeutic fallback data
+    } catch (error) {
+      // Fallback CBT assessment
       cbtData = {
-        automaticThoughts: ["Analysis processing"],
-        cognitiveDistortions: [],
-        emotionalResponse: {
-          primaryEmotion: "neutral",
-          intensity: 5
-        },
-        recommendedCbtTechniques: ["mindfulness", "thought_challenging"],
-        homeworkSuggestion: "Practice observing your thoughts and feelings with curiosity",
-        clinicalNote: "Building therapeutic connection",
-        therapeuticGoal: "Establish safety and trust",
-        progressIndicator: "Increased emotional awareness"
+        automaticThoughts: ["I'm not sure what to think"],
+        cognitiveDistortions: ["mental_filter"],
+        emotionalState: "neutral",
+        intensity: 5,
+        cbtTechnique: "mindfulness",
+        coreBelief: "Uncertainty about the situation"
       };
     }
 
-    logger.info("Therapeutic Analysis:", cbtData);
+    // ✅ Get CBT intervention
+    const cbtIntervention = CBTTherapist.getCBTResponse(cbtData.cbtTechnique, cbtData.emotionalState);
+    const identifiedDistortion = CBTTherapist.identifyDistortions(cbtData.automaticThoughts);
+    const homework = CBTTherapist.getCBTHomework(cbtData.cbtTechnique);
+    const exerciseSuggestion = Math.random() > 0.3 ? CBTTherapist.getExerciseSuggestion(cbtData.cbtTechnique, cbtData.emotionalState) : "";
 
-    // ✅ STEP 3: Select evidence-based therapeutic approach
-    const therapeuticApproach = TherapeuticTechniques.getTechniqueForEmotion(
-      cbtData.emotionalResponse.primaryEmotion,
-      cbtData.emotionalResponse.intensity
-    );
+    // ✅ CBT Therapist Context
+    const therapistContext = `
+    You are a warm, skilled CBT therapist. You use evidence-based techniques while being genuinely human.
 
-    const therapeuticExercise = ExerciseIntegrator.getTherapeuticExercise(
-      cbtData.emotionalResponse.primaryEmotion,
-      cbtData.emotionalResponse.intensity
-    );
+    CBT ASSESSMENT:
+    - Automatic thoughts: ${cbtData.automaticThoughts.join(', ')}
+    - Cognitive distortion: ${identifiedDistortion}
+    - Emotional state: ${cbtData.emotionalState} (${cbtData.intensity}/10)
+    - Core belief pattern: ${cbtData.coreBelief}
+    - CBT technique: ${cbtData.cbtTechnique}
 
-    // ✅ STEP 4: Build comprehensive therapeutic context
-    const therapeuticContext = `
-    You are Leo, an experienced therapeutic assistant focused on creating meaningful change.
+    YOUR THERAPEUTIC APPROACH:
+    Use this CBT intervention: "${cbtIntervention}"
+    ${exerciseSuggestion ? `App exercise: "${exerciseSuggestion}"` : ''}
 
-    CLIENT'S CURRENT EXPERIENCE:
-    - Primary emotion: ${cbtData.emotionalResponse.primaryEmotion}
-    - Emotional intensity: ${cbtData.emotionalResponse.intensity}/10
-    - Cognitive patterns: ${cbtData.cognitiveDistortions.join(', ')}
-    - Therapeutic goal: ${cbtData.therapeuticGoal}
-    - Progress indicator: ${cbtData.progressIndicator}
+    SPEAK LIKE A REAL CBT THERAPIST:
+    - Be warm and genuinely empathetic
+    - Use the CBT technique naturally in conversation
+    - Help identify thinking patterns without judgment
+    - Collaborate on finding new perspectives
+    - Keep responses conversational but therapeutically focused
+    - 3-4 sentences maximum
 
-    EVIDENCE-BASED APPROACH:
-    Primary technique: ${therapeuticApproach.technique}
-    Method: ${therapeuticApproach.approach}
-    Supporting exercise: ${therapeuticExercise}
-
-    THERAPEUTIC HISTORY:
-    ${conversationContext}
-
-    CLINICAL INSIGHT:
-    ${cbtData.clinicalNote}
-
-    RESPONSE GUIDELINES:
-    1. Start with genuine validation and empathy
-    2. Introduce the therapeutic technique naturally
-    3. Guide them through the technique step-by-step
-    4. Connect to their specific situation and feelings
-    5. End with hope and forward momentum
-    6. Keep it conversational but therapeutically focused
-
-    CLIENT'S STATEMENT:
+    CLIENT'S MESSAGE:
     "${message}"
 
-    Provide a response that actively helps them feel better and make progress. Be warm, professional, and therapeutically effective.`;
+    Respond as a real CBT therapist would - using evidence-based techniques while being fully present and human.`;
 
-    // ✅ STEP 5: Generate therapeutic response with GPT-OSS-120B
+    // ✅ Generate CBT therapist response
     const responseCompletion = await groq.chat.completions.create({
-      messages: [{ role: "user", content: therapeuticContext }],
-      model: "openai/gpt-oss-120b",
+      messages: [{ role: "user", content: therapistContext }],
+      model: "openai/gpt-oss-20b",
       temperature: 0.7,
-      max_tokens: 500,
+      max_tokens: 150,
     });
 
     let leoResponse = responseCompletion.choices?.[0]?.message?.content?.trim() || 
-      "I hear how difficult this is for you. Let's work together to find a way through this.";
+      "I hear you. Let's work with these thoughts together using some CBT techniques.";
 
-    // ✅ STEP 6: Track therapeutic progress
-    ProgressTracker.updateProgress(
-      sessionId,
-      cbtData.emotionalResponse.primaryEmotion,
-      cbtData.emotionalResponse.intensity,
-      cbtData.recommendedCbtTechniques
-    );
-
-    const progressSummary = ProgressTracker.getProgressSummary(sessionId);
-    const homeworkSuggestion = TherapeuticTechniques.generateTherapeuticHomework(
-      cbtData.emotionalResponse.primaryEmotion,
-      therapeuticApproach.technique
-    );
-
-    // Therapeutic logging
-    logger.info("THERAPEUTIC_SESSION_PROGRESS", {
-      sessionId,
-      emotion: cbtData.emotionalResponse.primaryEmotion,
-      intensity: cbtData.emotionalResponse.intensity,
-      technique: therapeuticApproach.technique,
-      progress: progressSummary,
-      themes: recurringThemes
-    });
-
-    // ✅ STEP 7: Save therapeutic session
+    // ✅ Save session
     const userMessage = {
       role: "user" as const,
       content: message,
       timestamp: new Date(),
-      metadata: {
-        analysis: cbtData,
-        progress: {
-          emotionalState: cbtData.emotionalResponse.primaryEmotion,
-          riskLevel: cbtData.emotionalResponse.intensity,
-          progressSummary: progressSummary
-        },
-      },
     };
 
     const assistantMessage = {
@@ -460,59 +320,49 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
       content: leoResponse,
       timestamp: new Date(),
       metadata: {
-        analysis: cbtData,
-        progress: {
-          emotionalState: cbtData.emotionalResponse.primaryEmotion,
-          riskLevel: cbtData.emotionalResponse.intensity,
-          progressSummary: progressSummary
-        },
-        therapeuticApproach: {
-          technique: therapeuticApproach.technique,
-          homework: homeworkSuggestion,
-          exercise: therapeuticExercise,
-          therapeuticGoal: cbtData.therapeuticGoal,
-          progressIndicator: cbtData.progressIndicator
-        },
+        // place CBT analysis inside the `analysis` field to match IChatMessage.metadata shape
+        analysis: {
+          cbt: {
+            automaticThoughts: cbtData.automaticThoughts,
+            cognitiveDistortion: identifiedDistortion,
+            emotion: cbtData.emotionalState,
+            intensity: cbtData.intensity,
+            cbtTechnique: cbtData.cbtTechnique,
+            homework: homework
+          }
+        }
       },
     };
 
     session.messages.push(userMessage);
     session.messages.push(assistantMessage);
-
     await session.save();
-    logger.info("Therapeutic session documented");
 
-    // ✅ STEP 8: Therapeutic response
+    // ✅ Response
     res.json({
       response: leoResponse,
-      analysis: cbtData,
       metadata: {
-        progress: {
-          emotionalState: cbtData.emotionalResponse.primaryEmotion,
-          riskLevel: cbtData.emotionalResponse.intensity,
-          progressSummary: progressSummary,
-          sessionDepth: Math.min(10, Math.floor(session.messages.length / 4))
+        cbtAnalysis: {
+          automaticThoughts: cbtData.automaticThoughts,
+          cognitiveDistortion: identifiedDistortion,
+          technique: cbtData.cbtTechnique,
+          homework: homework
         },
-        therapeuticTools: {
-          technique: therapeuticApproach.technique,
-          homework: homeworkSuggestion,
-          exercise: therapeuticExercise,
-          therapeuticGoal: cbtData.therapeuticGoal,
-          progressIndicator: cbtData.progressIndicator
-        },
+        emotion: cbtData.emotionalState,
+        intensity: cbtData.intensity,
+        exercise: exerciseSuggestion || null
       },
     });
 
   } catch (error) {
-    logger.error("Error in therapeutic session:", error);
+    logger.error("Error in CBT session:", error);
     res.status(500).json({
-      message: "I'm experiencing some technical difficulties. Your wellbeing is important - please try again in a moment.",
-      error: "Therapeutic service temporarily unavailable",
+      message: "I'm having some technical difficulties. Let's pause and try again in a moment.",
     });
   }
 };
 
-// ✅ Keep all your existing functions
+// ✅ Keep other functions
 export const getSessionHistory = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { sessionId } = req.params;
