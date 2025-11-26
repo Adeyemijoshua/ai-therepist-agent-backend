@@ -4,7 +4,7 @@ dotenv.config();
 
 // ==================== IMPORTS ====================
 import { Request, Response } from "express";
-import { ChatSession, IChatSession } from "../models/ChatSession";
+import { ChatSession } from "../models/ChatSession";
 import { v4 as uuidv4 } from "uuid";
 import { logger } from "../utils/logger";
 import { User } from "../models/User";
@@ -177,13 +177,12 @@ class TherapeuticTechniques {
 class ProgressTracker {
   private static userProgress = new Map();
 
-  static updateProgress(sessionId: string, assessment: CBTAssessment, responseLength: number) {
+  static updateProgress(sessionId: string, assessment: CBTAssessment) {
     if (!this.userProgress.has(sessionId)) {
       this.userProgress.set(sessionId, {
         sessionCount: 0,
         emotionalIntensityTrend: [],
         techniquesUsed: [],
-        lastAssessment: null
       });
     }
 
@@ -191,7 +190,6 @@ class ProgressTracker {
     progress.sessionCount++;
     progress.emotionalIntensityTrend.push(assessment.emotionalResponse.intensity);
     progress.techniquesUsed.push(...assessment.recommendedCbtTechniques);
-    progress.lastAssessment = assessment;
   }
 
   static getProgressSummary(sessionId: string) {
@@ -205,7 +203,6 @@ class ProgressTracker {
       sessionsCompleted: progress.sessionCount,
       averageEmotionalIntensity: Math.round(avgIntensity * 10) / 10,
       techniquesExperienced: techniqueVariety,
-      trend: progress.emotionalIntensityTrend[progress.emotionalIntensityTrend.length - 1] < progress.emotionalIntensityTrend[0] ? 'improving' : 'stable'
     };
   }
 }
@@ -298,7 +295,6 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
       ).join('\n')}` : 'First session.';
 
     const recurringThemes = identifyThemes(session.messages);
-    const progressSummary = ProgressTracker.getProgressSummary(sessionId);
 
     // Therapeutic Assessment
     const assessmentPrompt = `
@@ -326,9 +322,13 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
 
     const assessmentCompletion = await groq.chat.completions.create({
       messages: [{ role: "user", content: assessmentPrompt }],
-      model: "openai/gpt-oss-120b",
+      model: "openai/gpt-oss-20b",
       temperature: 0.1,
-      max_tokens: 500,
+      max_completion_tokens: 1024,
+      top_p: 1,
+      stream: false,
+      reasoning_effort: "medium",
+      stop: null
     });
 
     const assessmentText = assessmentCompletion.choices?.[0]?.message?.content?.trim() || "{}";
@@ -382,9 +382,13 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
 
     const responseCompletion = await groq.chat.completions.create({
       messages: [{ role: "user", content: therapeuticContext }],
-      model: "openai/gpt-oss-120b",
+      model: "openai/gpt-oss-20b",
       temperature: 0.7,
-      max_tokens: 300,
+      max_completion_tokens: 512,
+      top_p: 1,
+      stream: false,
+      reasoning_effort: "medium",
+      stop: null
     });
 
     let therapeuticResponse = responseCompletion.choices?.[0]?.message?.content?.trim() || 
@@ -394,7 +398,7 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
     therapeuticResponse = TextCleaner.cleanTherapeuticContent(therapeuticResponse);
 
     // Update progress tracking
-    ProgressTracker.updateProgress(sessionId, therapeuticAssessment, therapeuticResponse.length);
+    ProgressTracker.updateProgress(sessionId, therapeuticAssessment);
 
     // Save messages
     const userMessage = {
