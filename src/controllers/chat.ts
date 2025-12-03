@@ -359,6 +359,8 @@ async function generateTherapeuticResponse(
     "${message}"
 
     HOW TO RESPOND:
+    Keep your responses short and clear. 
+    Stay professional, warm, and concise while sounding like a real therapist.
     1. First, validate the emotion (${analysis.emotionalState}) authentically
     2. Apply ${analysis.specificTechniques[0]} technique naturally
     3. ${responseStyle}
@@ -374,7 +376,7 @@ async function generateTherapeuticResponse(
       messages: [{ role: "user", content: responsePrompt }],
       model: "llama-3.3-70b-versatile", // Using same model for consistency
       temperature: 0.75, // Higher for more human-like variation
-      max_tokens: 400,
+      max_tokens: 180,
       presence_penalty: 0.1,
       frequency_penalty: 0.1,
     });
