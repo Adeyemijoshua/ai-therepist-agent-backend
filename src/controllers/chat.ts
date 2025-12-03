@@ -78,10 +78,16 @@ async function getSessionMemory(sessionId: string): Promise<SessionMemory> {
       // Extract metadata if available
       if (msg.metadata?.analysis) {
         const analysis = msg.metadata.analysis;
-        if (analysis.emotion) memory.emotions.push(analysis.emotion);
-        if (analysis.mainThoughts) memory.topics.push(...analysis.mainThoughts.slice(0, 2));
-        if (analysis.cognitivePatterns) memory.patterns.push(...analysis.cognitivePatterns);
-        if (analysis.recommendedTechniques && analysis.recommendedTechniques[0]) {
+        if (analysis.emotion && typeof analysis.emotion === 'string') {
+          memory.emotions.push(analysis.emotion);
+        }
+        if (Array.isArray(analysis.mainThoughts) && analysis.mainThoughts.length > 0) {
+          memory.topics.push(...analysis.mainThoughts.slice(0, 2));
+        }
+        if (Array.isArray(analysis.cognitivePatterns) && analysis.cognitivePatterns.length > 0) {
+          memory.patterns.push(...analysis.cognitivePatterns);
+        }
+        if (Array.isArray(analysis.recommendedTechniques) && analysis.recommendedTechniques[0]) {
           memory.techniques.push(analysis.recommendedTechniques[0]);
         }
       }
@@ -138,6 +144,10 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
       return res.status(401).json({ message: "Unauthorized" });
     }
     
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ message: "Message is required and must be a string" });
+    }
+    
     const userId = new Types.ObjectId(req.user.id);
 
     // Get session
@@ -150,10 +160,10 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    // Get session memory with proper typing - NOW ASYNC
+    // Get session memory with proper typing
     const memory = await getSessionMemory(sessionId);
     
-    // Build conversation history from memory - ADDED SAFETY CHECK
+    // Build conversation history from memory with safety check
     const conversationHistory = memory?.history?.slice(-8).map((entry: MemoryEntry) => 
       `${entry.role}: ${entry.content}`
     ).join('\n') || '';
@@ -183,9 +193,25 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
 
     const analysisText = analysis.choices?.[0]?.message?.content?.trim() || "{}";
     let analysisData: AnalysisData;
+    
     try {
-      analysisData = JSON.parse(analysisText.replace(/```json|```/g, "").trim());
+      const parsed = JSON.parse(analysisText.replace(/```json|```/g, "").trim());
+      
+      // Safely extract all fields with proper type checking and defaults
+      analysisData = {
+        emotion: typeof parsed.emotion === 'string' ? parsed.emotion : "processing",
+        intensity: typeof parsed.intensity === 'number' && parsed.intensity >= 1 && parsed.intensity <= 10 
+          ? parsed.intensity 
+          : 5,
+        mainThoughts: Array.isArray(parsed.mainThoughts) ? parsed.mainThoughts : ["Exploring thoughts"],
+        cognitivePatterns: Array.isArray(parsed.cognitivePatterns) ? parsed.cognitivePatterns : [],
+        recommendedTechniques: Array.isArray(parsed.recommendedTechniques) && parsed.recommendedTechniques.length > 0
+          ? parsed.recommendedTechniques 
+          : ["active_listening"],
+        therapeuticFocus: typeof parsed.therapeuticFocus === 'string' ? parsed.therapeuticFocus : "emotional_support"
+      };
     } catch (e) {
+      // Fallback to default values if parsing fails
       analysisData = {
         emotion: "processing",
         intensity: 5,
@@ -196,16 +222,21 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
       };
     }
 
-    // Update memory - ADDED SAFETY CHECKS
+    // Update memory with safety checks
     if (memory) {
-      if (analysisData.emotion) memory.emotions.push(analysisData.emotion);
-      if (analysisData.mainThoughts && analysisData.mainThoughts.length > 0) {
+      if (analysisData.emotion && typeof analysisData.emotion === 'string') {
+        memory.emotions.push(analysisData.emotion);
+      }
+      
+      if (Array.isArray(analysisData.mainThoughts) && analysisData.mainThoughts.length > 0) {
         memory.topics.push(...analysisData.mainThoughts.slice(0, 2));
       }
-      if (analysisData.cognitivePatterns && analysisData.cognitivePatterns.length > 0) {
+      
+      if (Array.isArray(analysisData.cognitivePatterns) && analysisData.cognitivePatterns.length > 0) {
         memory.patterns.push(...analysisData.cognitivePatterns);
       }
-      if (analysisData.recommendedTechniques && analysisData.recommendedTechniques[0]) {
+      
+      if (Array.isArray(analysisData.recommendedTechniques) && analysisData.recommendedTechniques.length > 0) {
         memory.techniques.push(analysisData.recommendedTechniques[0]);
       }
 
@@ -237,7 +268,7 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
 
     HOW TO RESPOND AS LEO:
     1. Start with validation and empathy
-    2. Apply ${analysisData.recommendedTechniques[0] || 'active listening'} technique naturally
+    2. Apply ${analysisData.recommendedTechniques[0] || 'active_listening'} technique naturally
     3. Connect to previous topics if relevant
     4. Keep response therapeutic but conversational
     5. End with one gentle question to continue exploration
@@ -267,6 +298,12 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
       if (memory.history.length > 20) {
         memory.history = memory.history.slice(-20);
       }
+      
+      // Also keep other memory arrays manageable
+      if (memory.emotions.length > 10) memory.emotions = memory.emotions.slice(-10);
+      if (memory.topics.length > 10) memory.topics = memory.topics.slice(-10);
+      if (memory.techniques.length > 10) memory.techniques = memory.techniques.slice(-10);
+      if (memory.patterns.length > 10) memory.patterns = memory.patterns.slice(-10);
     }
 
     // Save to database
@@ -336,7 +373,7 @@ export const getSessionHistory = async (req: AuthenticatedRequest, res: Response
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    // Get memory for this session - NOW ASYNC
+    // Get memory for this session
     const memory = await getSessionMemory(sessionId);
 
     res.json({
@@ -425,5 +462,24 @@ export const getChatHistory = async (req: AuthenticatedRequest, res: Response) =
   } catch (error) {
     logger.error("Error fetching chat history:", error);
     res.status(500).json({ message: "Error fetching chat history" });
+  }
+};
+
+// Clean up memory for inactive sessions (optional utility function)
+export const cleanupInactiveSessions = async (maxAgeHours: number = 24) => {
+  try {
+    const cutoffTime = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000);
+    const inactiveSessions = await ChatSession.find({
+      status: "inactive",
+      lastActivity: { $lt: cutoffTime }
+    });
+    
+    for (const session of inactiveSessions) {
+      sessionMemories.delete(session.sessionId);
+    }
+    
+    logger.info(`Cleaned up ${inactiveSessions.length} inactive session memories`);
+  } catch (error) {
+    logger.error("Error cleaning up session memories:", error);
   }
 };
