@@ -157,8 +157,8 @@ Write a natural, flowing response that a real person would give.`;
     const response = await groq.chat.completions.create({
       messages: [{ role: "user", content: responsePrompt }],
       model: "llama-3.3-70b-versatile",
-      temperature: 0.8, // Higher temperature for more natural variation
-      max_tokens: 150,
+      temperature: 0.9, // Higher temperature for more natural variation
+      max_tokens: 200,
     });
 
     const leoResponse = response.choices[0]?.message?.content?.trim() || 
