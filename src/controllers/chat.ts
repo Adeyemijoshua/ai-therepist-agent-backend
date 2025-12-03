@@ -49,18 +49,48 @@ const groq = new Groq({
 // Simple memory storage with proper typing
 const sessionMemories = new Map<string, SessionMemory>();
 
-// Get or create session memory with proper typing
-function getSessionMemory(sessionId: string): SessionMemory {
-  if (!sessionMemories.has(sessionId)) {
-    sessionMemories.set(sessionId, {
-      history: [],
-      techniques: [],
-      emotions: [],
-      topics: [],
-      patterns: []
+// Get or create session memory with proper typing - LOADS FROM DATABASE ON RESTART
+async function getSessionMemory(sessionId: string): Promise<SessionMemory> {
+  // If memory exists in Map, return it
+  if (sessionMemories.has(sessionId)) {
+    return sessionMemories.get(sessionId)!;
+  }
+  
+  // Otherwise, load from database
+  const session = await ChatSession.findOne({ sessionId });
+  const memory: SessionMemory = {
+    history: [],
+    techniques: [],
+    emotions: [],
+    topics: [],
+    patterns: []
+  };
+  
+  if (session && session.messages && session.messages.length > 0) {
+    // Convert database messages to memory format
+    session.messages.forEach((msg: any) => {
+      if (msg.role === 'user') {
+        memory.history.push({ role: 'client', content: msg.content });
+      } else if (msg.role === 'assistant') {
+        memory.history.push({ role: 'leo', content: msg.content });
+      }
+      
+      // Extract metadata if available
+      if (msg.metadata?.analysis) {
+        const analysis = msg.metadata.analysis;
+        if (analysis.emotion) memory.emotions.push(analysis.emotion);
+        if (analysis.mainThoughts) memory.topics.push(...analysis.mainThoughts.slice(0, 2));
+        if (analysis.cognitivePatterns) memory.patterns.push(...analysis.cognitivePatterns);
+        if (analysis.recommendedTechniques && analysis.recommendedTechniques[0]) {
+          memory.techniques.push(analysis.recommendedTechniques[0]);
+        }
+      }
     });
   }
-  return sessionMemories.get(sessionId)!;
+  
+  // Store in Map for future use
+  sessionMemories.set(sessionId, memory);
+  return memory;
 }
 
 // Create new session
@@ -120,13 +150,13 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    // Get session memory with proper typing
-    const memory = getSessionMemory(sessionId);
+    // Get session memory with proper typing - NOW ASYNC
+    const memory = await getSessionMemory(sessionId);
     
-    // Build conversation history from memory - FIXED: proper typing
-    const conversationHistory = memory.history.slice(-8).map((entry: MemoryEntry) => 
+    // Build conversation history from memory - ADDED SAFETY CHECK
+    const conversationHistory = memory?.history?.slice(-8).map((entry: MemoryEntry) => 
       `${entry.role}: ${entry.content}`
-    ).join('\n');
+    ).join('\n') || '';
 
     // Therapeutic Analysis
     const analysisPrompt = `
@@ -166,12 +196,24 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
       };
     }
 
-    // Update memory
-    memory.emotions.push(analysisData.emotion);
-    memory.topics.push(...analysisData.mainThoughts.slice(0, 2));
-    memory.patterns.push(...analysisData.cognitivePatterns);
-    if (analysisData.recommendedTechniques[0]) {
-      memory.techniques.push(analysisData.recommendedTechniques[0]);
+    // Update memory - ADDED SAFETY CHECKS
+    if (memory) {
+      if (analysisData.emotion) memory.emotions.push(analysisData.emotion);
+      if (analysisData.mainThoughts && analysisData.mainThoughts.length > 0) {
+        memory.topics.push(...analysisData.mainThoughts.slice(0, 2));
+      }
+      if (analysisData.cognitivePatterns && analysisData.cognitivePatterns.length > 0) {
+        memory.patterns.push(...analysisData.cognitivePatterns);
+      }
+      if (analysisData.recommendedTechniques && analysisData.recommendedTechniques[0]) {
+        memory.techniques.push(analysisData.recommendedTechniques[0]);
+      }
+
+      // Update memory history
+      memory.history.push(
+        { role: 'client', content: message },
+        { role: 'leo', content: '' } // Will be filled after response
+      );
     }
 
     // Generate Leo's response with memory and therapeutic approach
@@ -179,10 +221,10 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
     You are Leo, an AI therapist. Be warm, professional, and therapeutic.
 
     SESSION MEMORY:
-    ${memory.history.length > 0 ? `
-    We've discussed: ${[...new Set(memory.topics)].slice(-3).join(', ')}
-    Emotional patterns: ${[...new Set(memory.emotions)].slice(-3).join(', ')}
-    Techniques used: ${[...new Set(memory.techniques)].slice(-3).join(', ')}` : 
+    ${memory?.history && memory.history.length > 0 ? `
+    We've discussed: ${[...new Set(memory.topics || [])].slice(-3).join(', ')}
+    Emotional patterns: ${[...new Set(memory.emotions || [])].slice(-3).join(', ')}
+    Techniques used: ${[...new Set(memory.techniques || [])].slice(-3).join(', ')}` : 
     'First session - building therapeutic relationship'}
 
     CURRENT ASSESSMENT:
@@ -213,13 +255,21 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
     let leoResponse = response.choices?.[0]?.message?.content?.trim() || 
       "I hear what you're sharing. Could you tell me more about how that feels?";
 
-    // Update memory with new exchange
-    memory.history.push(
-      { role: 'client', content: message },
-      { role: 'leo', content: leoResponse }
-    );
+    // Update memory with Leo's response
+    if (memory && memory.history.length > 0) {
+      // Update the last entry (which we added as empty)
+      const lastEntry = memory.history[memory.history.length - 1];
+      if (lastEntry.role === 'leo') {
+        lastEntry.content = leoResponse;
+      }
+      
+      // Keep history manageable
+      if (memory.history.length > 20) {
+        memory.history = memory.history.slice(-20);
+      }
+    }
 
-    // Save to database - FIXED: Only use properties that exist in your model
+    // Save to database
     session.messages.push({
       role: "user",
       content: message,
@@ -248,10 +298,14 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
         focus: analysisData.therapeuticFocus,
         patterns: analysisData.cognitivePatterns
       },
-      memory: {
+      memory: memory ? {
         sessionDepth: memory.history.length / 2,
-        topics: [...new Set(memory.topics)].slice(-5),
-        techniques: [...new Set(memory.techniques)]
+        topics: [...new Set(memory.topics || [])].slice(-5),
+        techniques: [...new Set(memory.techniques || [])]
+      } : {
+        sessionDepth: 0,
+        topics: [],
+        techniques: []
       }
     });
 
@@ -282,17 +336,17 @@ export const getSessionHistory = async (req: AuthenticatedRequest, res: Response
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    // Get memory for this session
-    const memory = sessionMemories.get(sessionId);
+    // Get memory for this session - NOW ASYNC
+    const memory = await getSessionMemory(sessionId);
 
     res.json({
       messages: session.messages,
       memory: memory ? {
-        topics: [...new Set(memory.topics)],
-        emotions: [...new Set(memory.emotions)],
-        techniques: [...new Set(memory.techniques)],
-        patterns: [...new Set(memory.patterns)],
-        sessionDepth: memory.history.length / 2
+        topics: [...new Set(memory.topics || [])],
+        emotions: [...new Set(memory.emotions || [])],
+        techniques: [...new Set(memory.techniques || [])],
+        patterns: [...new Set(memory.patterns || [])],
+        sessionDepth: memory.history ? memory.history.length / 2 : 0
       } : null,
       startTime: session.startTime,
       status: session.status,
@@ -313,8 +367,8 @@ export const getAllChatSessions = async (req: AuthenticatedRequest, res: Respons
     const userId = new Types.ObjectId(req.user.id);
     const sessions = await ChatSession.find({ userId }).sort({ startTime: -1 });
     
-    const sessionsWithMemory = sessions.map((s) => {
-      const memory = sessionMemories.get(s.sessionId);
+    const sessionsWithMemory = await Promise.all(sessions.map(async (s) => {
+      const memory = await getSessionMemory(s.sessionId);
       return {
         sessionId: s.sessionId,
         startTime: s.startTime,
@@ -322,11 +376,11 @@ export const getAllChatSessions = async (req: AuthenticatedRequest, res: Respons
         messagesCount: s.messages.length,
         lastMessage: s.messages[s.messages.length - 1] || null,
         memorySummary: memory ? {
-          topics: [...new Set(memory.topics)].slice(-3),
-          sessionDepth: memory.history.length / 2
+          topics: [...new Set(memory.topics || [])].slice(-3),
+          sessionDepth: memory.history ? memory.history.length / 2 : 0
         } : null
       };
-    });
+    }));
 
     res.json(sessionsWithMemory);
   } catch (error) {
