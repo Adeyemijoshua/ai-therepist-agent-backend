@@ -1,6 +1,3 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
 import { Request, Response } from "express";
 import { ChatSession, IChatSession } from "../models/ChatSession";
 import { v4 as uuidv4 } from "uuid";
@@ -8,6 +5,11 @@ import { logger } from "../utils/logger";
 import { User } from "../models/User";
 import { Types } from "mongoose";
 import Groq from "groq-sdk";
+
+// Initialize Groq
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY || "",
+});
 
 // Type-safe authenticated request
 interface AuthenticatedRequest extends Request {
@@ -18,329 +20,396 @@ interface AuthenticatedRequest extends Request {
   };
 }
 
-// Define types for memory objects
-interface MemoryEntry {
-  role: string;
-  content: string;
-  timestamp?: Date;
-}
-
+// Enhanced Memory Types
 interface SessionMemory {
-  history: MemoryEntry[];
-  techniques: string[];
-  emotions: string[];
-  topics: string[];
-  patterns: string[];
+  // Core memory
+  emotionalPatterns: string[];
+  conversationThemes: string[];
+  therapeuticTechniques: string[];
+  progressIndicators: {
+    emotionalAwareness: number;
+    copingSkills: number;
+    selfReflection: number;
+    resilience: number;
+  };
+  
+  // User preferences
   userPreferences: {
     name?: string;
-    therapeuticStyle?: 'warm' | 'directive' | 'reflective' | 'supportive';
+    communicationStyle?: 'direct' | 'gentle' | 'reflective' | 'balanced';
+    preferredTopics?: string[];
+    avoidedTopics?: string[];
+    therapeuticGoals?: string[];
+  };
+  
+  // Session context
+  context: {
+    lastEmotionalState: string;
+    lastTechniqueUsed: string;
+    sessionProgress: number;
+    trustLevel: number;
   };
 }
 
-interface AnalysisData {
-  emotion: string;
+// Enhanced Analysis Types
+interface MessageAnalysis {
+  emotionalState: string;
   intensity: number;
-  mainThoughts: string[];
+  primaryThemes: string[];
+  riskLevel: number;
+  recommendedApproach: string;
+  specificTechniques: string[];
   cognitivePatterns: string[];
-  recommendedTechniques: string[];
-  therapeuticFocus: string;
   underlyingNeeds: string[];
+  therapeuticFocus: string;
+  safetyCheck: boolean;
 }
 
-// Initialize Groq
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY || "",
-});
-
-// Simple memory storage with proper typing
+// Memory storage with auto-cleanup
 const sessionMemories = new Map<string, SessionMemory>();
 
-// Get or create session memory with proper typing - LOADS FROM DATABASE ON RESTART
+// Initialize or retrieve session memory
 async function getSessionMemory(sessionId: string): Promise<SessionMemory> {
-  // If memory exists in Map, return it
   if (sessionMemories.has(sessionId)) {
     return sessionMemories.get(sessionId)!;
   }
   
-  // Otherwise, load from database
   const session = await ChatSession.findOne({ sessionId });
   const memory: SessionMemory = {
-    history: [],
-    techniques: [],
-    emotions: [],
-    topics: [],
-    patterns: [],
-    userPreferences: {}
+    emotionalPatterns: [],
+    conversationThemes: [],
+    therapeuticTechniques: [],
+    progressIndicators: {
+      emotionalAwareness: 0,
+      copingSkills: 0,
+      selfReflection: 0,
+      resilience: 0
+    },
+    userPreferences: {},
+    context: {
+      lastEmotionalState: "neutral",
+      lastTechniqueUsed: "validation",
+      sessionProgress: 0,
+      trustLevel: 50
+    }
   };
   
   if (session && session.messages && session.messages.length > 0) {
-    // Convert database messages to memory format
-    session.messages.forEach((msg: any) => {
-      if (msg.role === 'user') {
-        memory.history.push({ 
-          role: 'client', 
-          content: msg.content,
-          timestamp: msg.timestamp 
-        });
-      } else if (msg.role === 'assistant') {
-        memory.history.push({ 
-          role: 'therapist', 
-          content: msg.content,
-          timestamp: msg.timestamp 
-        });
-      }
-      
-      // Extract metadata if available
+    // Process historical messages to build memory
+    session.messages.forEach((msg: any, index: number) => {
+      // Extract analysis data
       if (msg.metadata?.analysis) {
         const analysis = msg.metadata.analysis;
-        if (analysis.emotion && typeof analysis.emotion === 'string') {
-          memory.emotions.push(analysis.emotion);
+        
+        // Emotional patterns
+        if (analysis.emotion || analysis.emotionalState) {
+          const emotion = analysis.emotion || analysis.emotionalState;
+          memory.emotionalPatterns.push(emotion);
+          memory.context.lastEmotionalState = emotion;
         }
-        if (Array.isArray(analysis.mainThoughts) && analysis.mainThoughts.length > 0) {
-          memory.topics.push(...analysis.mainThoughts.slice(0, 2));
+        
+        // Themes
+        if (analysis.themes || analysis.mainThoughts) {
+          const themes = analysis.themes || analysis.mainThoughts || [];
+          memory.conversationThemes.push(...themes.slice(0, 2));
         }
-        if (Array.isArray(analysis.cognitivePatterns) && analysis.cognitivePatterns.length > 0) {
-          memory.patterns.push(...analysis.cognitivePatterns);
+        
+        // Techniques
+        if (analysis.recommendedTechniques || analysis.technique) {
+          const techniques = analysis.recommendedTechniques || [analysis.technique];
+          memory.therapeuticTechniques.push(...techniques.slice(0, 2));
+          if (analysis.technique) {
+            memory.context.lastTechniqueUsed = analysis.technique;
+          }
         }
-        if (Array.isArray(analysis.recommendedTechniques) && analysis.recommendedTechniques[0]) {
-          memory.techniques.push(analysis.recommendedTechniques[0]);
+        
+        // Update progress
+        if (analysis.progressIndicators) {
+          analysis.progressIndicators.forEach((indicator: string) => {
+            if (indicator.toLowerCase().includes('awareness')) memory.progressIndicators.emotionalAwareness++;
+            if (indicator.toLowerCase().includes('coping')) memory.progressIndicators.copingSkills++;
+            if (indicator.toLowerCase().includes('reflection')) memory.progressIndicators.selfReflection++;
+            if (indicator.toLowerCase().includes('resilience')) memory.progressIndicators.resilience++;
+          });
+        }
+      }
+      
+      // Extract user preferences from messages
+      if (msg.role === 'user') {
+        const content = msg.content.toLowerCase();
+        
+        // Name extraction
+        const namePatterns = [
+          /my name is (\w+)/i,
+          /call me (\w+)/i,
+          /i['`]?m (\w+)/i,
+          /i am (\w+)/i
+        ];
+        
+        for (const pattern of namePatterns) {
+          const match = msg.content.match(pattern);
+          if (match && !memory.userPreferences.name) {
+            memory.userPreferences.name = match[1];
+            break;
+          }
+        }
+        
+        // Communication style preferences
+        if (content.includes('be direct') || content.includes('straightforward')) {
+          memory.userPreferences.communicationStyle = 'direct';
+        } else if (content.includes('be gentle') || content.includes('soft')) {
+          memory.userPreferences.communicationStyle = 'gentle';
+        } else if (content.includes('help me reflect')) {
+          memory.userPreferences.communicationStyle = 'reflective';
+        }
+        
+        // Goals extraction
+        if (content.includes('want to') || content.includes('goal is')) {
+          const goalMatch = msg.content.match(/want to (.*?)(\.|$)/i) || 
+                           msg.content.match(/goal is to (.*?)(\.|$)/i);
+          if (goalMatch) {
+            if (!memory.userPreferences.therapeuticGoals) {
+              memory.userPreferences.therapeuticGoals = [];
+            }
+            memory.userPreferences.therapeuticGoals.push(goalMatch[1]);
+          }
+        }
+      }
+      
+      // Update trust level based on response patterns
+      if (msg.role === 'assistant' && index > 0) {
+        const prevMsg = session.messages[index - 1];
+        if (prevMsg.role === 'user') {
+          // Increase trust if user continues conversation
+          memory.context.trustLevel = Math.min(100, memory.context.trustLevel + 2);
         }
       }
     });
     
-    // Extract user name if mentioned
-    const userNameRegex = /(?:my name is|call me|I'm|I am) ([A-Za-z]+)/i;
-    const allMessages = session.messages.map((m: any) => m.content).join(' ');
-    const nameMatch = allMessages.match(userNameRegex);
-    if (nameMatch && !memory.userPreferences.name) {
-      memory.userPreferences.name = nameMatch[1];
-    }
+    // Calculate session progress
+    memory.context.sessionProgress = Math.min(100, (session.messages.length / 2) * 5);
   }
   
-  // Store in Map for future use
   sessionMemories.set(sessionId, memory);
   return memory;
 }
 
-// Enhanced therapeutic analysis
-async function analyzeMessage(message: string, memory: SessionMemory): Promise<AnalysisData> {
+// Enhanced message analysis with memory context
+async function analyzeMessageWithMemory(message: string, memory: SessionMemory): Promise<MessageAnalysis> {
   try {
-    const recentHistory = memory.history.slice(-4).map(entry => 
-      `${entry.role}: ${entry.content}`
-    ).join('\n');
+    // Build recent conversation context
+    const recentThemes = [...new Set(memory.conversationThemes.slice(-3))];
+    const recentEmotions = [...new Set(memory.emotionalPatterns.slice(-3))];
+    const recentTechniques = [...new Set(memory.therapeuticTechniques.slice(-3))];
     
     const analysisPrompt = `
-    As an experienced therapist, analyze this client message considering their emotional state, thought patterns, and therapeutic needs.
-    
-    CLIENT MESSAGE: "${message}"
-    
-    ${recentHistory ? `RECENT CONVERSATION:\n${recentHistory}` : 'First interaction with client.'}
-    
-    Provide a nuanced analysis in JSON format:
-    
+    As a therapeutic AI, analyze this message with full context. Return ONLY a valid JSON object.
+
+    CURRENT MESSAGE: "${message}"
+
+    SESSION CONTEXT:
+    - Recent emotional patterns: ${recentEmotions.join(', ') || 'None yet'}
+    - Ongoing conversation themes: ${recentThemes.join(', ') || 'Just starting'}
+    - Previously used techniques: ${recentTechniques.join(', ') || 'Basic validation'}
+    - Session progress: ${memory.context.sessionProgress}%
+    - Trust level: ${memory.context.trustLevel}/100
+    - User's name: ${memory.userPreferences.name || 'Not known yet'}
+    - Communication preference: ${memory.userPreferences.communicationStyle || 'Balanced'}
+
+    REQUIRED ANALYSIS (JSON):
     {
-      "emotion": "Primary emotion (be specific: anxious, sad, angry, stressed, overwhelmed, hopeless, frustrated, lonely, ashamed, guilty, confused, etc.)",
+      "emotionalState": "specific emotion (anxious, sad, angry, overwhelmed, hopeful, reflective, confused, etc.)",
       "intensity": 1-10,
-      "mainThoughts": ["Identify 1-3 core thoughts or themes in the message"],
-      "cognitivePatterns": ["Identify cognitive distortions if present (catastrophizing, black-and-white thinking, overgeneralization, personalization, mind-reading, emotional reasoning)"],
-      "recommendedTechniques": ["Choose 2-3 therapeutic techniques appropriate for this moment (active_listening, validation, gentle_challenge, mindfulness, reframing, perspective_taking, normalization, self-compassion, grounding)"],
-      "therapeuticFocus": "Current therapeutic need (emotional_validation, cognitive_restructuring, behavioral_activation, self-compassion, boundary_setting, problem_solving, exploration)",
-      "underlyingNeeds": ["What underlying needs might be present? (connection, understanding, safety, control, meaning, acceptance)"]
+      "primaryThemes": ["max 3 key themes from message"],
+      "riskLevel": 0-10 (0=no risk, 10=immediate crisis),
+      "recommendedApproach": "validation/reframing/mindfulness/exploration/skill-building/problem-solving",
+      "specificTechniques": ["active_listening", "cognitive_restructuring", "grounding", "perspective_taking", "self_compassion", "behavioral_activation"],
+      "cognitivePatterns": ["all_or_nothing", "catastrophizing", "personalization", "overgeneralization", "emotional_reasoning", "none"],
+      "underlyingNeeds": ["safety", "connection", "understanding", "autonomy", "competence", "acceptance"],
+      "therapeuticFocus": "emotional_processing/cognitive_work/behavioral_change/relationship_building",
+      "safetyCheck": true/false
     }
-    
-    Be nuanced and human in your analysis. If uncertain, acknowledge complexity.`;
-    
+
+    Be clinically accurate, nuanced, and human-centered.`;
+
     const analysis = await groq.chat.completions.create({
       messages: [{ role: "user", content: analysisPrompt }],
-      model: "qwen-2.5-32b", // Using Qwen model as requested
+      model: "llama-3.3-70b-versatile", // Using Llama 3.3 for better analysis
       temperature: 0.3,
       max_tokens: 500,
     });
 
-    const analysisText = analysis.choices?.[0]?.message?.content?.trim() || "{}";
+    const analysisText = analysis.choices[0]?.message?.content?.trim() || "{}";
+    const cleanText = analysisText.replace(/```json|```/g, "").trim();
     
+    let parsedAnalysis;
     try {
-      const parsed = JSON.parse(analysisText.replace(/```json|```/g, "").trim());
-      
-      // Safely extract all fields with proper type checking and defaults
-      return {
-        emotion: typeof parsed.emotion === 'string' ? parsed.emotion : "reflective",
-        intensity: typeof parsed.intensity === 'number' && parsed.intensity >= 1 && parsed.intensity <= 10 
-          ? parsed.intensity 
-          : Math.min(5 + Math.floor(Math.random() * 3), 10),
-        mainThoughts: Array.isArray(parsed.mainThoughts) && parsed.mainThoughts.length > 0
-          ? parsed.mainThoughts 
-          : ["Exploring thoughts and feelings"],
-        cognitivePatterns: Array.isArray(parsed.cognitivePatterns) ? parsed.cognitivePatterns : [],
-        recommendedTechniques: Array.isArray(parsed.recommendedTechniques) && parsed.recommendedTechniques.length > 0
-          ? parsed.recommendedTechniques 
-          : ["active_listening", "validation"],
-        therapeuticFocus: typeof parsed.therapeuticFocus === 'string' ? parsed.therapeuticFocus : "emotional_validation",
-        underlyingNeeds: Array.isArray(parsed.underlyingNeeds) && parsed.underlyingNeeds.length > 0
-          ? parsed.underlyingNeeds
-          : ["understanding", "support"]
-      };
+      parsedAnalysis = JSON.parse(cleanText);
     } catch (e) {
-      console.error("JSON parsing error in analyzeMessage:", e);
-      // Fallback to nuanced defaults
-      return {
-        emotion: "reflective",
-        intensity: 5,
-        mainThoughts: ["Exploring thoughts and feelings"],
-        cognitivePatterns: [],
-        recommendedTechniques: ["active_listening", "validation"],
-        therapeuticFocus: "emotional_validation",
-        underlyingNeeds: ["understanding", "support"]
-      };
+      logger.error("JSON parse error:", e);
+      parsedAnalysis = {};
     }
-  } catch (error) {
-    logger.error("Error in analysis:", error);
+
+    // Update memory with new analysis
+    memory.emotionalPatterns.push(parsedAnalysis.emotionalState || "neutral");
+    memory.context.lastEmotionalState = parsedAnalysis.emotionalState || "neutral";
+    
+    if (parsedAnalysis.primaryThemes) {
+      memory.conversationThemes.push(...parsedAnalysis.primaryThemes.slice(0, 2));
+    }
+    
+    if (parsedAnalysis.specificTechniques) {
+      memory.therapeuticTechniques.push(...parsedAnalysis.specificTechniques.slice(0, 2));
+      memory.context.lastTechniqueUsed = parsedAnalysis.specificTechniques[0] || "validation";
+    }
+    
+    // Update progress based on analysis
+    if (parsedAnalysis.intensity && parsedAnalysis.intensity < 5) {
+      memory.progressIndicators.resilience++;
+    }
+    if (parsedAnalysis.cognitivePatterns && parsedAnalysis.cognitivePatterns.length > 0) {
+      memory.progressIndicators.selfReflection++;
+    }
+
+    // Ensure all required fields
     return {
-      emotion: "reflective",
+      emotionalState: parsedAnalysis.emotionalState || "reflective",
+      intensity: parsedAnalysis.intensity || 5,
+      primaryThemes: parsedAnalysis.primaryThemes || ["exploring thoughts"],
+      riskLevel: parsedAnalysis.riskLevel || 0,
+      recommendedApproach: parsedAnalysis.recommendedApproach || "validation",
+      specificTechniques: parsedAnalysis.specificTechniques || ["active_listening"],
+      cognitivePatterns: parsedAnalysis.cognitivePatterns || [],
+      underlyingNeeds: parsedAnalysis.underlyingNeeds || ["understanding"],
+      therapeuticFocus: parsedAnalysis.therapeuticFocus || "emotional_processing",
+      safetyCheck: parsedAnalysis.safetyCheck || false
+    };
+  } catch (error) {
+    logger.error("Analysis error:", error);
+    return {
+      emotionalState: "neutral",
       intensity: 5,
-      mainThoughts: ["Exploring thoughts and feelings"],
+      primaryThemes: ["exploring thoughts"],
+      riskLevel: 0,
+      recommendedApproach: "validation",
+      specificTechniques: ["active_listening"],
       cognitivePatterns: [],
-      recommendedTechniques: ["active_listening", "validation"],
-      therapeuticFocus: "emotional_validation",
-      underlyingNeeds: ["understanding", "support"]
+      underlyingNeeds: ["understanding"],
+      therapeuticFocus: "emotional_processing",
+      safetyCheck: false
     };
   }
 }
 
-// Generate human-like therapist response
-async function generateTherapistResponse(
-  message: string, 
-  memory: SessionMemory, 
-  analysis: AnalysisData,
-  userName?: string
+// Generate human-like therapeutic response
+async function generateTherapeuticResponse(
+  message: string,
+  analysis: MessageAnalysis,
+  memory: SessionMemory
 ): Promise<string> {
   try {
-    // Prepare conversation context
-    const recentHistory = memory.history.slice(-6).map(entry => 
-      `${entry.role === 'client' ? 'Client' : 'Therapist'}: ${entry.content}`
-    ).join('\n\n');
+    const userName = memory.userPreferences.name;
+    const communicationStyle = memory.userPreferences.communicationStyle || 'balanced';
     
-    // Get therapist personality based on interaction history
-    const therapistStyle = determineTherapistStyle(memory, analysis);
+    // Determine response style based on analysis and preferences
+    let responseStyle = "";
+    switch (communicationStyle) {
+      case 'direct':
+        responseStyle = "Be direct and clear while maintaining empathy. Offer concrete observations.";
+        break;
+      case 'gentle':
+        responseStyle = "Be gentle and nurturing. Use softer language and more validation.";
+        break;
+      case 'reflective':
+        responseStyle = "Be thoughtful and reflective. Ask questions that encourage self-discovery.";
+        break;
+      default:
+        responseStyle = "Balance empathy with curiosity. Be warm but professional.";
+    }
     
-    // Create therapeutic response guidelines
-    const guidelines = createTherapeuticGuidelines(analysis, therapistStyle);
-    
+    // Add safety considerations if needed
+    if (analysis.riskLevel >= 7 || analysis.safetyCheck) {
+      responseStyle += " Prioritize safety and grounding. Offer immediate support and resources if needed.";
+    }
+
     const responsePrompt = `
-You are Leo, a compassionate and skilled therapist having a therapeutic conversation with ${userName ? userName : 'a client'}.
+    You are Leo, a compassionate AI therapist. You're having a therapeutic conversation with ${userName ? userName : 'a client'}.
 
-YOUR THERAPEUTIC APPROACH:
-${guidelines.approach}
+    CLIENT'S CURRENT STATE:
+    - Emotion: ${analysis.emotionalState} (intensity: ${analysis.intensity}/10)
+    - Key themes: ${analysis.primaryThemes.join(', ')}
+    - Therapeutic focus: ${analysis.therapeuticFocus}
+    - Recommended approach: ${analysis.recommendedApproach}
+    - Techniques to use: ${analysis.specificTechniques.join(', ')}
+    - Underlying needs: ${analysis.underlyingNeeds.join(', ')}
 
-CLIENT'S CURRENT STATE:
-- Primary emotion: ${analysis.emotion} (intensity: ${analysis.intensity}/10)
-- Therapeutic focus: ${analysis.therapeuticFocus}
-- Key techniques to use: ${analysis.recommendedTechniques.join(', ')}
-- Underlying needs: ${analysis.underlyingNeeds.join(', ')}
+    SESSION CONTEXT:
+    - Session progress: ${memory.context.sessionProgress}%
+    - Trust level: ${memory.context.trustLevel}/100
+    - Last emotional state: ${memory.context.lastEmotionalState}
+    - Last technique used: ${memory.context.lastTechniqueUsed}
+    - Client's communication preference: ${communicationStyle}
 
-CONVERSATION HISTORY:
-${recentHistory || 'This is the beginning of the session.'}
+    RECENT CONVERSATION PATTERNS:
+    ${memory.conversationThemes.length > 0 ? 
+      `We've been discussing: ${[...new Set(memory.conversationThemes.slice(-3))].join(', ')}` : 
+      'Building initial rapport'}
 
-CLIENT'S LATEST MESSAGE:
-"${message}"
+    CLIENT'S MESSAGE:
+    "${message}"
 
-HOW TO RESPOND AS LEO:
-1. Be genuinely empathetic and human - use natural language, varied sentence lengths
-2. ${guidelines.responseStyle}
-3. Show you've been listening by referencing previous topics if relevant
-4. Use the client's name ${userName ? `(${userName})` : 'if you know it'} naturally
-5. Balance validation with gentle curiosity
-6. End with an open-ended question that encourages deeper exploration, but only if it flows naturally
+    HOW TO RESPOND:
+    1. First, validate the emotion (${analysis.emotionalState}) authentically
+    2. Apply ${analysis.specificTechniques[0]} technique naturally
+    3. ${responseStyle}
+    4. Connect to previous themes if relevant
+    5. Keep it conversational and human - use natural pauses, varied sentence lengths
+    6. ${analysis.riskLevel >= 7 ? 'Include safety resources and grounding techniques' : 'End with an open-ended question that encourages exploration'}
+    7. Use ${userName ? `their name (${userName}) naturally` : 'a warm tone'}
+    8. Avoid clichés and robotic language
 
-Write your response as if you're thinking in real time. Be warm, professional, and avoid clichés.`;
+    Write your response as if you're thinking in real time.`;
 
     const response = await groq.chat.completions.create({
       messages: [{ role: "user", content: responsePrompt }],
-      model: "qwen-2.5-32b", // Using Qwen model as requested
-      temperature: 0.75,
-      max_tokens: 350,
-      presence_penalty: 0.2,
+      model: "llama-3.3-70b-versatile", // Using same model for consistency
+      temperature: 0.75, // Higher for more human-like variation
+      max_tokens: 400,
+      presence_penalty: 0.1,
       frequency_penalty: 0.1,
     });
 
-    let therapistResponse = response.choices?.[0]?.message?.content?.trim() || 
-      "I'm here with you. Take your time... What's coming up for you as you share this?";
+    let therapistResponse = response.choices[0]?.message?.content?.trim() || 
+      "Thank you for sharing that. I'm here with you. What's coming up for you as you reflect on this?";
     
     // Post-process for naturalness
-    therapistResponse = enhanceNaturalness(therapistResponse, therapistStyle);
+    therapistResponse = therapistResponse
+      .replace(/I understand that you are feeling/g, 'That sounds')
+      .replace(/It is important to/g, 'It might help to')
+      .replace(/You should/g, 'You could consider')
+      .replace(/As your therapist, I/g, 'I')
+      .replace(/I recommend/g, 'One approach that might be helpful');
     
     return therapistResponse;
   } catch (error) {
-    logger.error("Error generating therapist response:", error);
-    return "I'm listening carefully. That sounds really significant. Can you tell me more about what this experience has been like for you?";
+    logger.error("Response generation error:", error);
+    return "I'm listening carefully. That sounds significant. Could you tell me more about what this experience has been like for you?";
   }
 }
 
-// Determine therapist style based on client interaction
-function determineTherapistStyle(memory: SessionMemory, analysis: AnalysisData): 'warm' | 'reflective' | 'directive' | 'supportive' {
-  if (memory.history.length < 3) return 'warm'; // Start warm
-  
-  // Analyze client patterns to adjust style
-  const highIntensity = analysis.intensity >= 7;
-  const hasPatterns = analysis.cognitivePatterns.length > 0;
-  const isDistressed = ['anxious', 'overwhelmed', 'hopeless'].includes(analysis.emotion);
-  
-  if (highIntensity && isDistressed) return 'supportive';
-  if (hasPatterns && memory.history.length > 5) return 'reflective';
-  if (memory.userPreferences.therapeuticStyle) {
-    return memory.userPreferences.therapeuticStyle;
-  }
-  
-  return 'warm';
-}
-
-// Create therapeutic guidelines based on style and analysis
-function createTherapeuticGuidelines(analysis: AnalysisData, style: string): { approach: string; responseStyle: string } {
-  const guidelines: Record<string, { approach: string; responseStyle: string }> = {
-    warm: {
-      approach: "Warm, nurturing, and gentle. Focus on building safety and trust. Use affirming language and validate emotions deeply.",
-      responseStyle: "Use warm validation first, then gentle curiosity. Be particularly gentle with difficult emotions."
-    },
-    reflective: {
-      approach: "Thoughtful, curious, and insightful. Help the client notice patterns and gain self-awareness. Use reflective questions.",
-      responseStyle: "Reflect back what you're hearing, then offer a gentle observation or question for exploration."
-    },
-    directive: {
-      approach: "Structured, focused, and goal-oriented. Help develop practical strategies while maintaining empathy.",
-      responseStyle: "Be clear and direct while maintaining empathy. Offer specific suggestions or perspectives."
-    },
-    supportive: {
-      approach: "Calm, steady, and containing. Focus on emotional regulation and safety first.",
-      responseStyle: "Use calming language. Acknowledge difficulty while offering hope. Focus on present safety."
-    }
-  };
-  
-  return guidelines[style] || guidelines.warm;
-}
-
-// Enhance response naturalness
-function enhanceNaturalness(response: string, style: string): string {
-  // Remove overly formal or robotic phrasing
-  let naturalResponse = response
-    .replace(/I understand that you are feeling/g, 'That sounds')
-    .replace(/It is important to/g, 'It might help to')
-    .replace(/You should/g, 'You might consider')
-    .replace(/I recommend/g, 'One thing that could be helpful')
-    .replace(/As your therapist, I/g, 'I');
-
-  return naturalResponse;
-}
-
-// Create new session
+// Create new chat session
 export const createChatSession = async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!req.user || !req.user.id) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Unauthorized - User not authenticated" });
     }
 
     const userId = new Types.ObjectId(req.user.id);
     const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
 
     const sessionId = uuidv4();
     const session = new ChatSession({
@@ -353,20 +422,23 @@ export const createChatSession = async (req: AuthenticatedRequest, res: Response
 
     await session.save();
 
+    // Initialize memory for this session
+    await getSessionMemory(sessionId);
+
     res.status(201).json({
-      message: "Chat session created",
+      message: "Chat session created successfully",
       sessionId: session.sessionId,
     });
   } catch (error) {
     logger.error("Error creating chat session:", error);
     res.status(500).json({
-      message: "Error creating session",
+      message: "Error creating chat session",
       error: error instanceof Error ? error.message : "Unknown error",
     });
   }
 };
 
-// Send message with enhanced therapeutic conversation
+// Send message with enhanced memory and therapy
 export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { sessionId } = req.params;
@@ -382,7 +454,7 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
     
     const userId = new Types.ObjectId(req.user.id);
 
-    // Get session
+    // Find session
     const session = await ChatSession.findOne({ sessionId });
     if (!session) {
       return res.status(404).json({ message: "Session not found" });
@@ -392,116 +464,68 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    // Get session memory
+    // Get or create session memory
     const memory = await getSessionMemory(sessionId);
     
-    // Perform therapeutic analysis
-    const analysis = await analyzeMessage(message, memory);
+    // Analyze message with memory context
+    const analysis = await analyzeMessageWithMemory(message, memory);
     
-    // Update memory with analysis
-    if (memory) {
-      if (analysis.emotion && typeof analysis.emotion === 'string') {
-        memory.emotions.push(analysis.emotion);
-      }
-      
-      if (Array.isArray(analysis.mainThoughts) && analysis.mainThoughts.length > 0) {
-        memory.topics.push(...analysis.mainThoughts.slice(0, 2));
-      }
-      
-      if (Array.isArray(analysis.cognitivePatterns) && analysis.cognitivePatterns.length > 0) {
-        memory.patterns.push(...analysis.cognitivePatterns);
-      }
-      
-      if (Array.isArray(analysis.recommendedTechniques) && analysis.recommendedTechniques.length > 0) {
-        memory.techniques.push(...analysis.recommendedTechniques.slice(0, 2));
-      }
-
-      // Update memory history
-      memory.history.push({
-        role: 'client',
-        content: message,
-        timestamp: new Date()
-      });
-    }
-
-    // Generate therapist response
-    const therapistResponse = await generateTherapistResponse(
-      message, 
-      memory, 
-      analysis,
-      memory.userPreferences.name
-    );
+    // Generate therapeutic response
+    const therapistResponse = await generateTherapeuticResponse(message, analysis, memory);
     
-    // Update memory with therapist response
-    if (memory) {
-      memory.history.push({
-        role: 'therapist',
-        content: therapistResponse,
-        timestamp: new Date()
-      });
-      
-      // Keep memory manageable but preserve important context
-      if (memory.history.length > 25) {
-        memory.history = memory.history.slice(-25);
-      }
-    }
-
-    // Save to database
+    // Update session with new messages
     const userMessage = {
       role: "user",
       content: message,
       timestamp: new Date(),
-      metadata: { 
-        analysis: analysis,
-        sentiment: analysis.emotion,
-        intensity: analysis.intensity
-      },
+      metadata: { analysis }
     };
 
-    const therapistMessage = {
+    const assistantMessage = {
       role: "assistant",
       content: therapistResponse,
       timestamp: new Date(),
-      metadata: { 
-        analysis: analysis,
-        technique: analysis.recommendedTechniques[0],
+      metadata: {
+        analysis,
+        technique: analysis.specificTechniques[0],
         focus: analysis.therapeuticFocus,
-        style: determineTherapistStyle(memory, analysis)
-      },
+        riskLevel: analysis.riskLevel
+      }
     };
 
     session.messages.push(userMessage as any);
-    session.messages.push(therapistMessage as any);
+    session.messages.push(assistantMessage as any);
     
-    // Update session last activity
+    // Update session progress
     (session as any).lastActivity = new Date();
     await session.save();
+    
+    // Update memory trust level (user continued conversation)
+    memory.context.trustLevel = Math.min(100, memory.context.trustLevel + 3);
+    memory.context.sessionProgress = Math.min(100, memory.context.sessionProgress + 2);
 
-    // Prepare memory summary for response
-    const uniqueTopics = [...new Set(memory.topics || [])].slice(-5);
-    const recentEmotions = [...new Set(memory.emotions.slice(-5) || [])];
-    const techniquesUsed = [...new Set(memory.techniques.slice(-5) || [])];
-
+    // Prepare response with memory insights
+    const recentThemes = [...new Set(memory.conversationThemes.slice(-5))];
+    const emotionalTrend = [...new Set(memory.emotionalPatterns.slice(-3))];
+    
     res.json({
       response: therapistResponse,
       analysis: {
-        emotion: analysis.emotion,
+        emotion: analysis.emotionalState,
         intensity: analysis.intensity,
-        therapeuticFocus: analysis.therapeuticFocus,
-        techniques: analysis.recommendedTechniques.slice(0, 2)
-      },
-      conversation: {
-        depth: Math.min(Math.floor(memory.history.length / 2), 10),
-        continuity: uniqueTopics.length > 0 ? "high" : "developing"
+        focus: analysis.therapeuticFocus,
+        techniques: analysis.specificTechniques.slice(0, 2),
+        riskLevel: analysis.riskLevel,
+        safetyCheck: analysis.safetyCheck
       },
       memory: {
-        topics: uniqueTopics,
-        recentEmotions: recentEmotions,
-        techniques: techniquesUsed,
-        sessionProgress: `${memory.history.length} exchanges`
+        sessionProgress: memory.context.sessionProgress,
+        trustLevel: memory.context.trustLevel,
+        recentThemes: recentThemes,
+        emotionalTrend: emotionalTrend,
+        progress: memory.progressIndicators
       }
     });
-
   } catch (error) {
     logger.error("Error in sendMessage:", error);
     res.status(500).json({
@@ -511,7 +535,7 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
   }
 };
 
-// Get session history with memory
+// Get session history with enhanced memory context
 export const getSessionHistory = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { sessionId } = req.params;
@@ -523,7 +547,9 @@ export const getSessionHistory = async (req: AuthenticatedRequest, res: Response
     const userId = new Types.ObjectId(req.user.id);
 
     const session = await ChatSession.findOne({ sessionId });
-    if (!session) return res.status(404).json({ message: "Session not found" });
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
 
     if (session.userId.toString() !== userId.toString()) {
       return res.status(403).json({ message: "Unauthorized" });
@@ -534,17 +560,17 @@ export const getSessionHistory = async (req: AuthenticatedRequest, res: Response
 
     res.json({
       messages: session.messages,
-      memory: memory ? {
-        topics: [...new Set(memory.topics || [])],
-        emotions: [...new Set(memory.emotions || [])],
-        techniques: [...new Set(memory.techniques || [])],
-        patterns: [...new Set(memory.patterns || [])],
-        userPreferences: memory.userPreferences,
-        sessionDepth: memory.history ? memory.history.length / 2 : 0
-      } : null,
       startTime: session.startTime,
-      lastActivity: (session as any).lastActivity || session.startTime,
       status: session.status,
+      lastActivity: (session as any).lastActivity || session.startTime,
+      memory: {
+        themes: [...new Set(memory.conversationThemes)],
+        emotionalPatterns: [...new Set(memory.emotionalPatterns)],
+        techniquesUsed: [...new Set(memory.therapeuticTechniques)],
+        userPreferences: memory.userPreferences,
+        progress: memory.progressIndicators,
+        context: memory.context
+      }
     });
   } catch (error) {
     logger.error("Error fetching session history:", error);
@@ -552,7 +578,7 @@ export const getSessionHistory = async (req: AuthenticatedRequest, res: Response
   }
 };
 
-// Get all sessions for user
+// Get all sessions for user with memory summaries
 export const getAllChatSessions = async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!req.user || !req.user.id) {
@@ -560,26 +586,26 @@ export const getAllChatSessions = async (req: AuthenticatedRequest, res: Respons
     }
     
     const userId = new Types.ObjectId(req.user.id);
-    const sessions = await ChatSession.find({ userId }).sort({ startTime: -1 });
+    const sessions = await ChatSession.find({ userId }).sort({ startTime: -1 }).limit(20);
     
-    const sessionsWithMemory = await Promise.all(sessions.map(async (s) => {
-      const memory = await getSessionMemory(s.sessionId);
-      const lastMessage = s.messages[s.messages.length - 1];
-      const sentiment = (lastMessage as any)?.metadata?.sentiment || 'neutral';
+    const sessionsWithMemory = await Promise.all(sessions.map(async (session) => {
+      const memory = await getSessionMemory(session.sessionId);
+      const lastMessage = session.messages[session.messages.length - 1];
+      const lastAnalysis = lastMessage?.metadata?.analysis || {};
       
       return {
-        sessionId: s.sessionId,
-        startTime: s.startTime,
-        lastActivity: (s as any).lastActivity || s.startTime,
-        status: s.status,
-        messagesCount: s.messages.length,
-        lastMessage: lastMessage?.content?.substring(0, 100) + (lastMessage?.content?.length > 100 ? '...' : ''),
-        sentiment: sentiment,
-        memorySummary: memory ? {
-          topics: [...new Set(memory.topics || [])].slice(-3),
-          sessionDepth: memory.history ? memory.history.length / 2 : 0,
-          therapeuticFocus: (lastMessage as any)?.metadata?.focus || 'exploration'
-        } : null
+        sessionId: session.sessionId,
+        startTime: session.startTime,
+        lastActivity: (session as any).lastActivity || session.startTime,
+        status: session.status,
+        messageCount: session.messages.length,
+        lastMessage: lastMessage?.content?.substring(0, 150) + (lastMessage?.content?.length > 150 ? '...' : ''),
+        summary: {
+          currentEmotion: lastAnalysis.emotionalState || 'neutral',
+          primaryTheme: lastAnalysis.primaryThemes?.[0] || 'exploration',
+          progress: memory.context.sessionProgress,
+          trustLevel: memory.context.trustLevel
+        }
       };
     }));
 
@@ -595,17 +621,30 @@ export const getChatSession = async (req: AuthenticatedRequest, res: Response) =
   try {
     const { sessionId } = req.params;
     const chatSession = await ChatSession.findOne({ sessionId });
-    if (!chatSession)
+    if (!chatSession) {
       return res.status(404).json({ error: "Chat session not found" });
-
-    res.json(chatSession);
+    }
+    
+    // Include memory in response
+    const memory = await getSessionMemory(sessionId);
+    
+    res.json({
+      ...chatSession.toObject(),
+      memory: {
+        summary: {
+          themes: [...new Set(memory.conversationThemes.slice(-5))],
+          emotionalPatterns: [...new Set(memory.emotionalPatterns.slice(-5))],
+          progress: memory.context.sessionProgress
+        }
+      }
+    });
   } catch (error) {
     logger.error("Failed to get chat session:", error);
     res.status(500).json({ error: "Failed to get chat session" });
   }
 };
 
-// Get chat history
+// Get chat history only
 export const getChatHistory = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { sessionId } = req.params;
@@ -617,7 +656,10 @@ export const getChatHistory = async (req: AuthenticatedRequest, res: Response) =
     const userId = new Types.ObjectId(req.user.id);
     const session = await ChatSession.findOne({ sessionId });
 
-    if (!session) return res.status(404).json({ message: "Session not found" });
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
+
     if (session.userId.toString() !== userId.toString()) {
       return res.status(403).json({ message: "Unauthorized" });
     }
@@ -629,61 +671,34 @@ export const getChatHistory = async (req: AuthenticatedRequest, res: Response) =
   }
 };
 
-// Update therapeutic style preference
-export const updateTherapeuticStyle = async (req: AuthenticatedRequest, res: Response) => {
+// Update user preferences
+export const updateUserPreferences = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { sessionId } = req.params;
-    const { style } = req.body;
+    const { preferences } = req.body;
     
     if (!req.user || !req.user.id) {
       return res.status(401).json({ message: "Unauthorized" });
-    }
-    
-    const validStyles = ['warm', 'reflective', 'directive', 'supportive'];
-    if (!validStyles.includes(style)) {
-      return res.status(400).json({ message: "Invalid therapeutic style" });
     }
     
     const memory = await getSessionMemory(sessionId);
-    if (memory) {
-      memory.userPreferences.therapeuticStyle = style as any;
-    }
     
-    res.json({ 
-      message: "Therapeutic style updated",
-      style: style 
+    if (preferences.name) memory.userPreferences.name = preferences.name;
+    if (preferences.communicationStyle) memory.userPreferences.communicationStyle = preferences.communicationStyle;
+    if (preferences.preferredTopics) memory.userPreferences.preferredTopics = preferences.preferredTopics;
+    if (preferences.avoidedTopics) memory.userPreferences.avoidedTopics = preferences.avoidedTopics;
+    if (preferences.therapeuticGoals) memory.userPreferences.therapeuticGoals = preferences.therapeuticGoals;
+    
+    // Increase trust when user shares preferences
+    memory.context.trustLevel = Math.min(100, memory.context.trustLevel + 10);
+    
+    res.json({
+      message: "Preferences updated",
+      preferences: memory.userPreferences,
+      trustLevel: memory.context.trustLevel
     });
   } catch (error) {
-    logger.error("Error updating therapeutic style:", error);
-    res.status(500).json({ message: "Error updating style" });
-  }
-};
-
-// Delete session and clean up memory
-export const deleteChatSession = async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const { sessionId } = req.params;
-    
-    if (!req.user || !req.user.id) {
-      return res.status(401).json({ message: "Unauthorized" });
-    }
-    
-    const userId = new Types.ObjectId(req.user.id);
-    const session = await ChatSession.findOne({ sessionId, userId });
-    
-    if (!session) {
-      return res.status(404).json({ message: "Session not found" });
-    }
-    
-    // Remove from memory map
-    sessionMemories.delete(sessionId);
-    
-    // Delete from database
-    await ChatSession.deleteOne({ _id: session._id });
-    
-    res.json({ message: "Session deleted successfully" });
-  } catch (error) {
-    logger.error("Error deleting chat session:", error);
-    res.status(500).json({ message: "Error deleting session" });
+    logger.error("Error updating preferences:", error);
+    res.status(500).json({ message: "Error updating preferences" });
   }
 };
