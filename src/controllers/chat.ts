@@ -81,7 +81,7 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
     }
 
     // Get the last few messages for context
-    const recentMessages = session.messages.slice(-4);
+    const recentMessages = session.messages.slice(-6);
     let conversationContext = "";
     
     if (recentMessages.length > 0) {
