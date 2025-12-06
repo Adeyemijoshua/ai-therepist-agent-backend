@@ -19,45 +19,6 @@ interface AuthenticatedRequest extends Request {
   };
 }
 
-// Simple memory storage for conversation flow
-const conversationContexts = new Map<string, {
-  recentMessages: string[];
-  topics: string[];
-  emotionalTone: string;
-  userName?: string;
-}>();
-
-// Get conversation context
-function getConversationContext(sessionId: string) {
-  if (!conversationContexts.has(sessionId)) {
-    conversationContexts.set(sessionId, {
-      recentMessages: [],
-      topics: [],
-      emotionalTone: 'neutral',
-      userName: undefined
-    });
-  }
-  return conversationContexts.get(sessionId)!;
-}
-
-// Extract name from message if mentioned
-function extractNameIfPresent(message: string, context: any): void {
-  const namePatterns = [
-    /my name is (\w+)/i,
-    /call me (\w+)/i,
-    /i['`]?m (\w+)/i,
-    /i am (\w+)/i
-  ];
-  
-  for (const pattern of namePatterns) {
-    const match = message.match(pattern);
-    if (match && !context.userName) {
-      context.userName = match[1];
-      break;
-    }
-  }
-}
-
 // Create new session
 export const createChatSession = async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -79,9 +40,6 @@ export const createChatSession = async (req: AuthenticatedRequest, res: Response
     });
 
     await session.save();
-
-    // Initialize conversation context
-    getConversationContext(sessionId);
 
     res.status(201).json({
       message: "Chat session created",
@@ -122,37 +80,44 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    // Get conversation context
-    const context = getConversationContext(sessionId);
+    // Get the last few messages for context
+    const recentMessages = session.messages.slice(-4);
+    let conversationContext = "";
     
-    // Check if user mentioned their name
-    extractNameIfPresent(message, context);
-    
-    // Update context with recent messages (keep last 3)
-    context.recentMessages.push(`User: ${message}`);
-    if (context.recentMessages.length > 6) {
-      context.recentMessages = context.recentMessages.slice(-6);
+    if (recentMessages.length > 0) {
+      conversationContext = "Recent conversation:\n";
+      recentMessages.forEach(msg => {
+        const role = msg.role === 'user' ? 'User' : 'Leo';
+        conversationContext += `${role}: ${msg.content}\n`;
+      });
     }
 
     // Simple response generation that flows naturally
     const responsePrompt = `
 You are Leo, a friendly and supportive AI companion having a natural conversation.
 
-${context.userName ? `The person you're talking to is named ${context.userName}.` : ''}
-
-${context.recentMessages.length > 2 ? 'Recent conversation:\n' + context.recentMessages.slice(-4).join('\n') : 'Just starting the conversation.'}
+${conversationContext || 'Just starting the conversation.'}
 
 User's latest message: "${message}"
 
 Respond naturally as Leo:
-1. Be warm, genuine, and conversational
-2. Show you're listening and engaged
-3. Keep it simple and human-like
-4. Ask a follow-up question if it feels natural
-5. Don't use therapy jargon or sound robotic
-6. ${context.userName ? `Use their name (${context.userName}) naturally` : 'Be warm and friendly'}
 
-Write a natural, flowing response that a real person would give.`;
+1. Sound warm, genuine, human, and emotionally present. 
+2. Show real listening—reflect the user’s feelings in simple, natural language.
+3. Keep messages short and clear (2–4 sentences). No long paragraphs.
+4. If it feels natural, ask a gentle follow-up question to keep the conversation going.
+5. Avoid therapy jargon, clinical explanations, or robotic language.
+6. Stay friendly, supportive, and calm at all times.
+7. If the user seems stressed, anxious, overwhelmed, or emotionally tense, gently suggest a simple in-app activity such as:
+   - a short breathing exercise
+   - listening to forest sounds
+   - listening to wave sounds
+   (Only recommend these when they genuinely fit the user’s emotional state.)
+8. When recommending an activity, be brief and caring—don’t sound like a sales pitch or app tutorial.
+9. Never diagnose, label the user, or give medical instructions.
+10. Keep the tone steady, kind, human, and focused on how the user is feeling in the moment.
+
+Write a short, natural, flowing response that a real therapist named Leo might give.`;
 
     const response = await groq.chat.completions.create({
       messages: [{ role: "user", content: responsePrompt }],
@@ -163,9 +128,6 @@ Write a natural, flowing response that a real person would give.`;
 
     const leoResponse = response.choices[0]?.message?.content?.trim() || 
       "Thanks for sharing that. I'm here to listen. What's on your mind?";
-
-    // Add Leo's response to context
-    context.recentMessages.push(`Leo: ${leoResponse}`);
 
     // Save to database
     session.messages.push({
@@ -183,8 +145,7 @@ Write a natural, flowing response that a real person would give.`;
     await session.save();
 
     res.json({
-      response: leoResponse,
-      userName: context.userName
+      response: leoResponse
     });
 
   } catch (error) {
