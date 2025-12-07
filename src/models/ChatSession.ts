@@ -49,6 +49,26 @@ const chatSessionSchema = new Schema<IChatSession>({
   messages: [chatMessageSchema],
 });
 
+//
+chatSessionSchema.pre("save", function(next) {
+  // Check if messages array is empty or undefined
+  if (!this.messages || this.messages.length === 0) {
+    // Prevent saving by passing an error
+    return next(new Error("Cannot save chat session with empty messages"));
+  }
+  
+  // Optional: Also check if all messages have content
+  const hasValidMessages = this.messages.some(
+    msg => msg.content && msg.content.trim().length > 0
+  );
+  
+  if (!hasValidMessages) {
+    return next(new Error("Cannot save chat session without valid message content"));
+  }
+  
+  next(); // Allow save to proceed
+});
+
 export const ChatSession = model<IChatSession>(
   "ChatSession",
   chatSessionSchema
