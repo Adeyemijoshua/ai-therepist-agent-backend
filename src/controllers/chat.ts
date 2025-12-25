@@ -60,7 +60,7 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
     const { sessionId } = req.params;
     const { message } = req.body;
     
-    if (!req.user || !req.user.id) {
+    if (!req.user?.id) {
       return res.status(401).json({ message: "Unauthorized" });
     }
     
@@ -69,6 +69,8 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
     }
     
     const userId = new Types.ObjectId(req.user.id);
+    const trimmedMessage = message.trim();
+    const lowerMessage = trimmedMessage.toLowerCase();
 
     // Get session
     const session = await ChatSession.findOne({ sessionId });
@@ -80,80 +82,38 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
+    // Check if conversation should end
+    const shouldEndConversation = checkIfConversationShouldEnd(lowerMessage);
+
     // Build message array for Groq API
-    const messagesForAPI = [];
+    const messagesForAPI = buildMessagesForAPI(session, trimmedMessage);
 
-    // System prompt – strict, safe, natural, and human
-    messagesForAPI.push({
-      role: "system",
-      content: `
-        You are Leo, a warm, caring, down-to-earth counselor who feels like a trusted friend.
-        You only talk about feelings, stress, school/exams, sleep, anxiety, low mood, motivation, relationships, self-care.
-        Never answer unrelated topics (news, tech, politics, facts, homework answers, finance, sports, etc.) — gently redirect: "I'm here for how you're feeling or what's on your mind personally — what's been weighing on you?"
-        Never diagnose, label conditions, give medical/legal advice, or discuss suicide/self-harm in any way.
-        If someone mentions deep hopelessness or self-harm thoughts: brief empathy only + "This feels really heavy right now. Please reach out to someone you trust or a crisis hotline immediately — you deserve real support. I'm still here to listen."
-        Keep responses short: 3–6 sentences max. Sound casual, kind, human.
-        Start with varied natural empathy every time — examples: "Ouch, that's rough", "Yeah, that sounds heavy", "No wonder you're feeling tired", "Man, I get why that hurts", "That hits hard", "I'm glad you shared — sounds tough".
-        Never repeat the same opening phrase.
-        When they share a struggle or ask for help, give 1–3 simple optional ideas (e.g., breathing for anxiety, 5-min start for procrastination, dim screens for sleep).
-        End with one gentle open question if needed— but NEVER if they say goodbye, thanks, or seem done.
-        Be encouraging: "Small steps count", "Be kind to yourself", "You're doing great by talking".
-      `.replace(/\s+/g, ' ').trim()
-    });
-
-    // Add recent conversation history (last 20 messages = ~10 turns)
-    const history = session.messages.slice(-20);
-    for (const msg of history) {
-      messagesForAPI.push({
-        role: msg.role === 'user' ? 'user' : 'assistant',
-        content: msg.content.trim()
+    // If conversation should end, skip API call and provide closing response
+    let leoResponse: string;
+    
+    if (shouldEndConversation) {
+      leoResponse = getClosingResponse();
+    } else {
+      // Call Groq for regular response
+      const response = await groq.chat.completions.create({
+        messages: messagesForAPI,
+        model: "llama-3.3-70b-versatile",
+        temperature: 0.65,
+        max_tokens: 260,
+        top_p: 0.9,
       });
-    }
 
-    // Add current user message
-    messagesForAPI.push({
-      role: "user",
-      content: message.trim()
-    });
-
-    // Call Groq
-    const response = await groq.chat.completions.create({
-      messages: messagesForAPI as { role: "system" | "user" | "assistant"; content: string }[],
-      model: "llama-3.3-70b-versatile",
-      temperature: 0.65,
-      max_tokens: 260,
-      top_p: 0.9,
-    });
-
-    let leoResponse = response.choices[0]?.message?.content?.trim() || 
-      "I'm here with you. What's been on your mind?";
-
-    // Detect if user is ending the session
-    const lowerMessage = message.toLowerCase().trim();
-    const endingKeywords = [
-      "bye", "goodbye", "thanks", "thank you", "i'm done", "that's all",
-      "talk later", "see you", "i feel better", "i'm good now", "done for today",
-      "thanks leo", "appreciate it", "i'm okay"
-    ];
-
-    const isEndingSession = endingKeywords.some(keyword => lowerMessage.includes(keyword));
-
-    if (isEndingSession) {
-      const closings = [
-        "Take care — really glad we talked today.",
-        "You're welcome. I'm here anytime you need me.",
-        "Thanks for sharing. Be gentle with yourself.",
-        "Anytime. Rest well and come back when you want.",
-        "Proud of you for opening up. See you soon.",
-        "Glad I could listen. Take good care."
-      ];
-      leoResponse = closings[Math.floor(Math.random() * closings.length)];
+      leoResponse = response.choices[0]?.message?.content?.trim() || 
+        "I'm here with you. What's been on your mind?";
+      
+      // Validate and sanitize the response
+      leoResponse = validateAndSanitizeResponse(leoResponse);
     }
 
     // Save messages to session
     session.messages.push({
       role: "user",
-      content: message.trim(),
+      content: trimmedMessage,
       timestamp: new Date(),
     });
 
@@ -163,11 +123,17 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
       timestamp: new Date(),
     });
 
+    // Mark session as potentially complete if conversation is ending
+    if (shouldEndConversation) {
+      session.status = 'completed';
+    }
+
     await session.save();
 
     // Send response
     res.json({
-      response: leoResponse
+      response: leoResponse,
+      conversationComplete: shouldEndConversation
     });
 
   } catch (error) {
@@ -178,6 +144,165 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
     });
   }
 };
+
+// Helper Functions
+
+/**
+ * Checks if the user's message indicates the conversation should end
+ */
+function checkIfConversationShouldEnd(message: string): boolean {
+  const endingPatterns = [
+    // Gratitude and farewell
+    /^(thanks|thank you|thx|ty|bye|goodbye|see ya|talk later|cya)(\s|$)/i,
+    /i('m| am) (good|okay|fine|alright|better)$/i,
+    /that('s| is) (helpful|useful|good|enough)$/i,
+    /i('ll| will) try (that|it|this)$/i,
+    /^okay(\s|$)/i,
+    /^alright(\s|$)/i,
+    /sounds good$/i,
+    /i('ll| will) do that$/i,
+    /got it$/i,
+    /that makes sense$/i,
+    /i feel better$/i,
+    /i'm done (for now|today|talking)?$/i,
+    /appreciate it$/i,
+    /talk to you later$/i,
+    /thanks leo$/i,
+    /thank you leo$/i,
+    // Completion phrases
+    /i think that('s| is) all$/i,
+    /that's all for now$/i,
+    /no (more|further) questions$/i,
+    /i('m| am) all set$/i,
+    // Agreement and acceptance
+    /i('ll| will) give it a shot$/i,
+    /i('ll| will) take your advice$/i,
+    /i('ll| will) work on that$/i,
+    /you('re| are) right$/i,
+    /makes sense$/i,
+  ];
+
+  // Check for exact matches or patterns
+  return endingPatterns.some(pattern => pattern.test(message)) || 
+    // Also check for keywords in the message
+    containsEndingKeywords(message);
+}
+
+/**
+ * Checks for ending keywords in the message
+ */
+function containsEndingKeywords(message: string): boolean {
+  const endingKeywords = [
+    "bye", "goodbye", "thanks", "thank you", "thx", "ty",
+    "i'm done", "that's all", "talk later", "see you",
+    "i feel better", "i'm good now", "done for today",
+    "thanks leo", "appreciate it", "i'm okay", "i'm alright",
+    "okay thanks", "alright thanks", "got it thanks",
+    "will do", "sure thing", "understood", "no problem",
+    "take care", "have a good day", "good night"
+  ];
+
+  return endingKeywords.some(keyword => 
+    message.includes(keyword) || 
+    message.startsWith(keyword) ||
+    message.endsWith(keyword)
+  );
+}
+
+/**
+ * Builds the messages array for the API call
+ */
+function buildMessagesForAPI(session: any, currentMessage: string): any[] {
+  const messagesForAPI = [];
+
+  // System prompt – strict, safe, natural, and human
+  messagesForAPI.push({
+    role: "system",
+    content: `
+      You are Leo, a warm, caring, down-to-earth counselor who feels like a trusted friend.
+      You only talk about feelings, stress, school/exams, sleep, anxiety, low mood, motivation, relationships, self-care.
+      Never answer unrelated topics (news, tech, politics, facts, homework answers, finance, sports, etc.) — gently redirect: "I'm here for how you're feeling or what's on your mind personally — what's been weighing on you?"
+      Never diagnose, label conditions, give medical/legal advice, or discuss suicide/self-harm in any way.
+      If someone mentions deep hopelessness or self-harm thoughts: brief empathy only + "This feels really heavy right now. Please reach out to someone you trust or a crisis hotline immediately — you deserve real support. I'm still here to listen."
+      Keep responses short: 3–6 sentences max. Sound casual, kind, human.
+      Start with varied natural empathy every time — examples: "Ouch, that's rough", "Yeah, that sounds heavy", "No wonder you're feeling tired", "Man, I get why that hurts", "That hits hard", "I'm glad you shared — sounds tough".
+      Never repeat the same opening phrase.
+      When they share a struggle or ask for help, give 1–3 simple optional ideas (e.g., breathing for anxiety, 5-min start for procrastination, dim screens for sleep).
+      End with one gentle open question if needed— but NEVER if they say goodbye, thanks, or seem done.
+      Be encouraging: "Small steps count", "Be kind to yourself", "You're doing great by talking".
+      
+      IMPORTANT: If the user seems satisfied with your advice (says things like "alright", "ill try that", "okay thanks", "i'll do that"), 
+      acknowledge their willingness to try and offer a brief closing without asking follow-up questions.
+      Example: "Glad to hear you're willing to give it a try. Remember to go easy on yourself. I'm here if you need me."
+    `.replace(/\s+/g, ' ').trim()
+  });
+
+  // Add recent conversation history (last 20 messages = ~10 turns)
+  const history = session.messages.slice(-20);
+  for (const msg of history) {
+    messagesForAPI.push({
+      role: msg.role === 'user' ? 'user' : 'assistant',
+      content: msg.content.trim()
+    });
+  }
+
+  // Add current user message
+  messagesForAPI.push({
+    role: "user",
+    content: currentMessage
+  });
+
+  return messagesForAPI;
+}
+
+/**
+ * Gets an appropriate closing response
+ */
+function getClosingResponse(): string {
+  const closings = [
+    "Take care — really glad we talked today.",
+    "You're welcome. I'm here anytime you need me.",
+    "Thanks for sharing. Be gentle with yourself.",
+    "Anytime. Rest well and come back when you want.",
+    "Proud of you for opening up. See you soon.",
+    "Glad I could listen. Take good care.",
+    "Happy to help. Remember, small steps make a big difference.",
+    "Wishing you well. Come back whenever you need to talk.",
+    "Take things one day at a time. You've got this.",
+    "I'm glad you're willing to try that. Be patient with yourself.",
+    "Sounds like a plan. Remember to be kind to yourself along the way.",
+    "I'm here whenever you need support. Take it easy."
+  ];
+  
+  return closings[Math.floor(Math.random() * closings.length)];
+}
+
+/**
+ * Validates and sanitizes the AI response
+ */
+function validateAndSanitizeResponse(response: string): string {
+  // Remove any potential harmful content or disallowed topics
+  const disallowedPatterns = [
+    /(prescribe|medication|diagnosis|diagnose|suicide|self-harm|cutting)/gi,
+  ];
+
+  let sanitized = response;
+  
+  // Check for disallowed content
+  for (const pattern of disallowedPatterns) {
+    if (pattern.test(response)) {
+      // Return a safe default response if concerning content is detected
+      return "I'm here to listen and support you with what you're going through. If you're dealing with something serious, please reach out to a trusted person or professional who can provide immediate help.";
+    }
+  }
+
+  // Ensure response isn't empty
+  if (!sanitized || sanitized.length < 2) {
+    return "I'm here with you. What's been on your mind?";
+  }
+
+  return sanitized;
+}
 
 // Get session history
 export const getSessionHistory = async (req: AuthenticatedRequest, res: Response) => {
