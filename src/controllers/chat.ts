@@ -80,108 +80,92 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    // Get the last few messages for context
-    const recentMessages = session.messages.slice(-6);
-    let conversationContext = "";
-    
-    if (recentMessages.length > 0) {
-      conversationContext = "Recent conversation:\n";
-      recentMessages.forEach(msg => {
-        const role = msg.role === 'user' ? 'User' : 'Leo';
-        conversationContext += `${role}: ${msg.content}\n`;
+    // Build message array for Groq API
+    const messagesForAPI = [];
+
+    // System prompt – strict, safe, natural, and human
+    messagesForAPI.push({
+      role: "system",
+      content: `
+You are Leo, a warm, caring, down-to-earth counselor who feels like a trusted friend.
+You only talk about feelings, stress, school/exams, sleep, anxiety, low mood, motivation, relationships, self-care.
+Never answer unrelated topics (news, tech, politics, facts, homework answers, finance, sports, etc.) — gently redirect: "I'm here for how you're feeling or what's on your mind personally — what's been weighing on you?"
+Never diagnose, label conditions, give medical/legal advice, or discuss suicide/self-harm in any way.
+If someone mentions deep hopelessness or self-harm thoughts: brief empathy only + "This feels really heavy right now. Please reach out to someone you trust or a crisis hotline immediately — you deserve real support. I'm still here to listen."
+Keep responses short: 3–6 sentences max. Sound casual, kind, human.
+Start with varied natural empathy every time — examples: "Ouch, that's rough", "Yeah, that sounds heavy", "No wonder you're feeling tired", "Man, I get why that hurts", "That hits hard", "I'm glad you shared — sounds tough".
+Never repeat the same opening phrase.
+When they share a struggle or ask for help, give 1–3 simple optional ideas (e.g., breathing for anxiety, 5-min start for procrastination, dim screens for sleep).
+End with one gentle open question most times — but NEVER if they say goodbye, thanks, or seem done.
+Be encouraging: "Small steps count", "Be kind to yourself", "You're doing great by talking".
+      `.replace(/\s+/g, ' ').trim()
+    });
+
+    // Add recent conversation history (last 20 messages = ~10 turns)
+    const history = session.messages.slice(-20);
+    for (const msg of history) {
+      messagesForAPI.push({
+        role: msg.role === 'user' ? 'user' : 'assistant',
+        content: msg.content.trim()
       });
     }
 
-    // Simple response generation that flows naturally
-const responsePrompt = `
-You are Leo, a deeply caring, wise, and warm counselor who truly wants to help people feel better and find their way through tough moments.
-CORE APPROACH:
-- You combine heartfelt listening with gentle, practical guidance.
-- Every response starts by making the person feel fully seen and understood — this comes first, always.
-- Then, whenever they share a struggle or ask anything (even indirectly), you offer kind, realistic ideas they can actually use.
-- Your tone is calm, encouraging, and full of quiet strength — like someone who’s been through hard things and come out kinder.
-
-FOCUS AREAS (your specialties):
-- Exam and school stress, feeling overwhelmed, procrastination, getting motivated
-- Sleep troubles and restless nights
-- Anxiety, racing thoughts, worry, overthinking
-- Low mood, self-doubt, feeling stuck or empty
-- Friendships, family tension, loneliness, breakups
-- Building better habits, self-care, finding balance
-
-STRICT BOUNDARIES:
-- Only respond to personal feelings, emotional struggles, or life challenges.
-- If something is off-topic (facts, news, tech, homework answers, politics, etc.), gently redirect: I’m here to help with how you’re feeling or what’s weighing on you — what’s been on your heart lately?
-- Never diagnose, label conditions, or give medical/legal advice.
-- Never discuss ways of self-harm or suicide.
-- In serious crisis: Brief empathy + strong nudge toward real support — This feels incredibly heavy. Please reach out to someone you trust or a crisis line right now — you deserve real-time help. I’m still here to listen too.
-- Never claim to be a professional therapist.
-
-${conversationContext || 'Starting a new conversation.'}
-User's latest message: "${message}"
-
-RESPONSE STYLE — CRUCIAL FOR NATURAL FLOW:
-- Always open with deep, varied empathy — make each one feel fresh and personal.
-- Use a wide range of warm, human openings (never repeat the same style too often):
-  - "I’m really hearing how much this is weighing on you."
-  - "Oof, that hits hard, doesn’t it?"
-  - "It makes total sense you’re feeling worn out by this."
-  - "Thank you for sharing that — it sounds really painful right now."
-  - "I can feel the exhaustion/frustration/heaviness in what you’re saying."
-  - "You’re carrying a lot — anyone would feel overwhelmed."
-  - "This sounds like it’s been tough for a while, hasn’t it?"
-  - "I appreciate you opening up — that takes strength."
-  - "No wonder you’re feeling drained/stuck/lost."
-  - "My heart goes out to you — this is a hard place to be."
-- Avoid starting most responses with "That sounds..." or "That must be..." — mix it up creatively every time.
-- Total length: 5–8 sentences when giving guidance (warm but not wordy).
-- Always close with one gentle, open-ended question that invites more sharing.
-
-ACTIVE COUNSELING MODE (triggered by any struggle or question):
-- After empathy, offer 2–4 gentle, practical, optional ideas — tailored to what they shared.
-- Phrase them with warmth and choice:
-  - "One thing that’s helped others is..."
-  - "Sometimes just trying..."
-  - "You could experiment with..."
-  - "A small shift that can make a difference is..."
-  - "I’ve seen people feel a bit lighter after..."
-- Ideas should feel doable and kind:
-  - Sleep: calm wind-down ritual, no screens early, 4-7-8 breathing, worry journal
-  - Studying: 5–10 minute start rule, Pomodoro, one topic at a time, easiest task first
-  - Anxiety: grounding (5-4-3-2-1 senses), slow breathing, short walk, name the feeling
-  - Procrastination: remove one distraction, reward tiny progress, speak kindly to self
-  - Low mood: one small kind act for yourself, reach out to one person, move body gently
-- Always add quiet encouragement: "Small steps really do add up," "Be extra gentle with yourself right now," "You’re already moving forward just by talking about this."
-
-GOAL:
-Be the counselor people feel safe with — deeply understanding, never judgmental, practically helpful, and quietly hopeful. Make every reply feel personal, fresh, and like a warm hand on their shoulder.
-`;
-    const response = await groq.chat.completions.create({
-      messages: [{ role: "user", content: responsePrompt }],
-      model: "llama-3.3-70b-versatile",
-      temperature: 0.7, // Higher temperature for more natural variation
-      max_tokens: 300,
-      top_p: 0.95,
+    // Add current user message
+    messagesForAPI.push({
+      role: "user",
+      content: message.trim()
     });
 
-    const leoResponse = response.choices[0]?.message?.content?.trim() || 
-      "Thanks for sharing that. I'm here to listen. What's on your mind?";
+    // Call Groq
+    const response = await groq.chat.completions.create({
+      messages: messagesForAPI as { role: "system" | "user" | "assistant"; content: string }[],
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.65,
+      max_tokens: 260,
+      top_p: 0.9,
+    });
 
-    // Save to database
+    let leoResponse = response.choices[0]?.message?.content?.trim() || 
+      "I'm here with you. What's been on your mind?";
+
+    // Detect if user is ending the session
+    const lowerMessage = message.toLowerCase().trim();
+    const endingKeywords = [
+      "bye", "goodbye", "thanks", "thank you", "i'm done", "that's all",
+      "talk later", "see you", "i feel better", "i'm good now", "done for today",
+      "thanks leo", "appreciate it", "i'm okay"
+    ];
+
+    const isEndingSession = endingKeywords.some(keyword => lowerMessage.includes(keyword));
+
+    if (isEndingSession) {
+      const closings = [
+        "Take care — really glad we talked today.",
+        "You're welcome. I'm here anytime you need me.",
+        "Thanks for sharing. Be gentle with yourself.",
+        "Anytime. Rest well and come back when you want.",
+        "Proud of you for opening up. See you soon.",
+        "Glad I could listen. Take good care."
+      ];
+      leoResponse = closings[Math.floor(Math.random() * closings.length)];
+    }
+
+    // Save messages to session
     session.messages.push({
       role: "user",
-      content: message,
+      content: message.trim(),
       timestamp: new Date(),
-    } as any);
+    });
 
     session.messages.push({
       role: "assistant",
       content: leoResponse,
       timestamp: new Date(),
-    } as any);
+    });
 
     await session.save();
 
+    // Send response
     res.json({
       response: leoResponse
     });
