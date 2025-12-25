@@ -99,7 +99,7 @@ export const sendMessage = async (req: AuthenticatedRequest, res: Response) => {
         messages: messagesForAPI,
         model: "llama-3.3-70b-versatile",
         temperature: 0.65,
-        max_tokens: 260,
+        max_tokens: 240,
         top_p: 0.9,
       });
 
